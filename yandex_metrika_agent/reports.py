@@ -18,9 +18,9 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable, Sequence
 from datetime import date, datetime, timedelta
-import re
 from typing import Any
 
 from yandex_metrika_agent.client import MetrikaClient
@@ -60,19 +60,6 @@ _TRAFFIC_KEYS: tuple[str, ...] = (
 
 #: Значение ``group`` для отчёта по дням.
 GROUP_DAY = "day"
-
-
-def _fmt_date(value: date | datetime | str | None) -> str | None:
-    """Привести дату к строке параметра API (ISO или относительная ``30daysAgo``)."""
-
-    if value is None:
-        return None
-    if isinstance(value, datetime):
-        return value.date().isoformat()
-    if isinstance(value, date):
-        return value.isoformat()
-    text = str(value).strip()
-    return text or None
 
 
 def _check_prefix(api_metrics: Sequence[str], api_dimensions: Sequence[str]) -> None:
@@ -137,32 +124,23 @@ class ReportService:
         if validate:
             self._validate(command, api_metrics, api_dimensions)
 
-        params: dict[str, Any] = {
-            "id": command.counter_id,
-            "metrics": ",".join(api_metrics),
-        }
-        if api_dimensions:
-            params["dimensions"] = ",".join(api_dimensions)
-        date1 = _fmt_date(command.date1)
-        date2 = _fmt_date(command.date2)
-        if date1 and date2:
-            params["date1"] = date1
-            params["date2"] = date2
-        if filters:
-            params["filters"] = filters
-        if command.sort_by:
-            params["sort"] = ",".join(
-                self._sort_token(token, validate=validate) for token in command.sort_by
-            )
         limit = command.limit if command.limit is not None else self.default_limit
-        if limit is not None:
-            params["limit"] = limit
-        if command.offset:
-            params["offset"] = command.offset
+        api_command = command.model_copy(
+            update={
+                "metrics": api_metrics,
+                "dimensions": api_dimensions,
+                "filters": [filters] if filters else [],
+                "sort_by": [
+                    self._sort_token(token, validate=validate) for token in command.sort_by
+                ],
+                "limit": limit,
+            }
+        )
+        params = api_command.to_params()
 
         payload = await self.client.get_json("/stat/v1/data", params=params, cacheable=cacheable)
         report = Report.model_validate(payload if isinstance(payload, dict) else {})
-        # Подставляем имена, если API их не вернул (для нормализации строк).
+        # API может не вернуть имена — подставляем имена из запроса.
         if not report.metric_names:
             report.metric_names = api_metrics
         if not report.dimension_names:
@@ -275,23 +253,28 @@ class ReportService:
         date_to: date | datetime | str | None = None,
         by_source: bool = False,
     ) -> dict[str, Any]:
-        """Достижения и конверсия цели (сводно или по источникам)."""
+        """Достижения и конверсия цели (сводно или по источникам).
 
+        Метрики цели — обычные параметры ``metrics``:
+        ``ym:s:goal<id>Reaches`` и ``ym:s:goal<id>ConversionRate``.
+        """
+
+        reaches_metric = goal_reaches(goal_id)
+        conversion_metric = goal_conversion(goal_id)
         dimensions = ["traffic_source"] if by_source else []
         report = await self.get_report(
             ReportCommand(
                 counter_id=counter_id,
-                metrics=["visits", "users"],
+                metrics=["visits", "users", reaches_metric, conversion_metric],
                 dimensions=dimensions,
                 date1=_coerce_date(date_from),
                 date2=_coerce_date(date_to),
-                include=[goal_reaches(goal_id), goal_conversion(goal_id)],
-            )
+            ),
+            # Имена метрик цели могут отсутствовать в статическом справочнике.
+            validate=False,
         )
-        reaches_metric = goal_reaches(goal_id)
-        conversion_metric = goal_conversion(goal_id)
         if by_source:
-            rows = self._rows_as_dicts(report, extra_metrics=[reaches_metric, conversion_metric])
+            rows = self._rows_as_dicts(report)
             return {
                 "counter_id": counter_id,
                 "goal_id": goal_id,
@@ -305,9 +288,8 @@ class ReportService:
             "period": self._period(report),
             "visits": totals.get("visits"),
             "users": totals.get("users"),
-            "goal_reaches": None,
-            "goal_conversion_rate": None,
-            "_raw_metric_names": report.metric_names,
+            "goal_reaches": totals.get(self.directory.humanize(reaches_metric)),
+            "goal_conversion_rate": totals.get(self.directory.humanize(conversion_metric)),
         }
 
     async def compare_periods(
@@ -359,23 +341,22 @@ class ReportService:
 
     # --- Разбор ответа -------------------------------------------------------
 
+    def rows_as_dicts(self, report: Report) -> list[dict[str, Any]]:
+        """Публичный доступ к нормализованным строкам отчёта."""
+
+        return self._rows_as_dicts(report)
+
     def _totals_map(self, report: Report) -> dict[str, Any]:
         """Сопоставить человеческое имя метрики -> значение из итогов."""
 
-        totals = report.data.totals.metrics if report.data and report.data.totals else []
-        result: dict[str, float | int | None] = {}
+        result: dict[str, Any] = {}
         for index, api in enumerate(report.metric_names):
-            if index >= len(totals):
+            if index >= len(report.totals):
                 break
-            result[self.directory.humanize(api)] = totals[index]
+            result[self.directory.humanize(api)] = report.totals[index]
         return result
 
-    def _rows_as_dicts(
-        self,
-        report: Report,
-        *,
-        extra_metrics: Iterable[str] = (),
-    ) -> list[dict[str, Any]]:
+    def _rows_as_dicts(self, report: Report) -> list[dict[str, Any]]:
         """Превратить строки отчёта в список нормализованных словарей.
 
         Каждой строке соответствуют измерения (человеческие имена -> значения)
@@ -383,13 +364,8 @@ class ReportService:
         """
 
         rows: list[dict[str, Any]] = []
-        if not report.data:
-            return rows
         metric_names = list(report.metric_names)
-        for extra in extra_metrics:
-            if extra not in metric_names:
-                metric_names.append(extra)
-        for row in report.data.rows:
+        for row in report.data:
             item: dict[str, Any] = {}
             for index, dimension in enumerate(row.dimensions):
                 key = (
@@ -401,16 +377,15 @@ class ReportService:
             for index, value in enumerate(row.metrics):
                 if index < len(metric_names):
                     item[self.directory.humanize(metric_names[index])] = value
-            if row.total is not None:
-                item["total"] = row.total
             rows.append(item)
         return rows
 
     def _period(self, report: Report) -> dict[str, str] | None:
-        """Период отчёта из ответа (min_date/max_date)."""
+        """Период отчёта из эха запроса (``query.date1``/``query.date2``)."""
 
-        if report.data and report.data.min_date and report.data.max_date:
-            return {"from": report.data.min_date, "to": report.data.max_date}
+        query = report.query
+        if query and query.date1 and query.date2:
+            return {"from": query.date1, "to": query.date2}
         return None
 
     # --- Валидация и переводы ------------------------------------------------

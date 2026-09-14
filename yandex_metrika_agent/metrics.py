@@ -4,17 +4,25 @@ AI-агент и пользователь оперируют понятиями 
 «страницы», «конверсия», а не ``ym:s:visits`` и ``ym:s:trafficSource``. Здесь
 живёт отображение первых во вторые и обратно, а также проверка корректности.
 
-Идентификаторы взяты только из актуальной документации Reports API
-(``https://yandex.com/dev/metrika/ru/stat/``):
+Важно про источник истины. Актуальный публичный Reports API
+(``https://yandex.com/dev/metrika/ru/stat/``) НЕ отдаёт список доступных
+метрик/измерений через HTTP — справочник опубликован только как документация
+(``.../stat/attrandmetr/dim_all``). Поэтому:
+
+* :data:`METRIC_ALIASES` / :data:`DIMENSION_ALIASES` — статические псевдонимы
+  («static aliases»), удобный fallback для перевода человек -> API;
+* :class:`MetricDirectory` с переданным ``MetricGroupPage`` — режим сверки с
+  внешним каталогом («live API catalog»), если интегратор получил его из
+  внешнего источника (собственная БД, внутренний справочник, будущий endpoint
+  Метрики). Без ``page`` справочник НЕ является live-каталогом: свойство
+  :attr:`MetricDirectory.is_live` честно возвращает ``False``.
+
+Идентификаторы взяты только из актуальной документации Reports API:
 
 * метрики визитов — префикс ``ym:s:``;
 * цель — параметризованные ``ym:s:goal<id>reaches`` и
-  ``ym:s:goal<id>conversionRate``.
-
-Словарь — это удобные псевдонимы. Авторитетный же список доступных для
-конкретного счётчика метрик/измерений отдаёт ``GET /stat/v1/metrics`` —
-:class:`MetricDirectory` умеет сверять псевдонимы с ним, когда справочник
-получен из API.
+  ``ym:s:goal<id>conversionRate`` (а также ``users``, ``visits``,
+  ``reachesPerUser``, ``userConversionRate``).
 """
 
 from __future__ import annotations
@@ -109,8 +117,18 @@ MAX_DIMENSIONS = 10
 #: Идентификатор метрики/измерения: ``ym:s:name`` или ``ym:pv:name``.
 _IDENTIFIER_RE = re.compile(r"^ym:(s|pv):[A-Za-z0-9_]+$")
 
-#: Параметризованная метрика цели: ``ym:s:goal<id>reaches`` / ``...conversionRate``.
-_GOAL_METRIC_RE = re.compile(r"^ym:s:goal(\d+)(reaches|conversionRate)$")
+#: Параметризованная метрика цели: ``ym:s:goal<id>reaches`` и т. п.
+#: Полный набор видов подтверждён справочником ``stat/attrandmetr/dim_all``:
+#: reaches, users, visits, reachesPerUser, conversionRate, userConversionRate.
+_GOAL_METRIC_KINDS: tuple[str, ...] = (
+    "reaches",
+    "users",
+    "visits",
+    "reachesPerUser",
+    "conversionRate",
+    "userConversionRate",
+)
+_GOAL_METRIC_RE = re.compile(r"^ym:s:goal(\d+)(" + "|".join(_GOAL_METRIC_KINDS) + r")$")
 
 
 def _normalize_alias(name: str) -> str:
@@ -132,7 +150,8 @@ class GoalMetric:
 
     Args:
         goal_id: идентификатор цели.
-        kind: ``reaches`` (достижения) или ``conversionRate`` (конверсия).
+        kind: вид метрики — ``reaches``, ``conversionRate``, ``users``,
+            ``visits``, ``reachesPerUser``, ``userConversionRate``.
     """
 
     goal_id: int
@@ -144,10 +163,10 @@ class GoalMetric:
                 "goal_id должен быть положительным.",
                 details={"goal_id": self.goal_id},
             )
-        if self.kind not in {"reaches", "conversionRate"}:
+        if self.kind not in _GOAL_METRIC_KINDS:
             raise ValidationError(
-                "Метрика цели бывает reaches или conversionRate.",
-                details={"kind": self.kind},
+                "Неизвестный вид метрики цели.",
+                details={"kind": self.kind, "allowed": list(_GOAL_METRIC_KINDS)},
             )
 
     @property
@@ -160,7 +179,15 @@ class GoalMetric:
     def title(self) -> str:
         """Человеческое название метрики цели."""
 
-        return f"Цель {self.goal_id}: {'достижения' if self.kind == 'reaches' else 'конверсия'}"
+        titles = {
+            "reaches": "достижения",
+            "users": "посетители, достигшие цели",
+            "visits": "визиты с достижением цели",
+            "reachesPerUser": "достижений на посетителя",
+            "conversionRate": "конверсия по визитам",
+            "userConversionRate": "конверсия по посетителям",
+        }
+        return f"Цель {self.goal_id}: {titles.get(self.kind, self.kind)}"
 
 
 def goal_reaches(goal_id: int) -> str:
@@ -170,9 +197,33 @@ def goal_reaches(goal_id: int) -> str:
 
 
 def goal_conversion(goal_id: int) -> str:
-    """Идентификатор метрики «конверсия цели»."""
+    """Идентификатор метрики «конверсия цели по визитам»."""
 
     return GoalMetric(goal_id, "conversionRate").api_name
+
+
+def goal_users(goal_id: int) -> str:
+    """Идентификатор метрики «посетители, достигшие цели»."""
+
+    return GoalMetric(goal_id, "users").api_name
+
+
+def goal_visits(goal_id: int) -> str:
+    """Идентификатор метрики «визиты с достижением цели»."""
+
+    return GoalMetric(goal_id, "visits").api_name
+
+
+def goal_reaches_per_user(goal_id: int) -> str:
+    """Идентификатор метрики «достижений на посетителя»."""
+
+    return GoalMetric(goal_id, "reachesPerUser").api_name
+
+
+def goal_user_conversion(goal_id: int) -> str:
+    """Идентификатор метрики «конверсия цели по посетителям»."""
+
+    return GoalMetric(goal_id, "userConversionRate").api_name
 
 
 class MetricDirectory:
@@ -281,7 +332,9 @@ class MetricDirectory:
     def suggest_dimensions(self, query: str, *, limit: int = 8) -> list[str]:
         """Близкие идентификаторы измерений по опечатке/фрагменту."""
 
-        return self._suggest(query, self._known_dimensions or set(DIMENSION_ALIASES.values()), limit)
+        return self._suggest(
+            query, self._known_dimensions or set(DIMENSION_ALIASES.values()), limit
+        )
 
     # --- Внутреннее ----------------------------------------------------------
 
@@ -364,5 +417,9 @@ __all__ = [
     "MetricDirectory",
     "goal_conversion",
     "goal_reaches",
+    "goal_reaches_per_user",
+    "goal_user_conversion",
+    "goal_users",
+    "goal_visits",
     "is_api_identifier",
 ]

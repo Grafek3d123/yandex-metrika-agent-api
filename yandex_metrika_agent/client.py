@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
@@ -39,6 +40,7 @@ class AccessTokenSource(Protocol):
 
     async def access_token(self) -> str:
         """Вернуть токен, при необходимости обновив его."""
+        ...
 
 
 class StaticToken:
@@ -84,9 +86,11 @@ class StoredToken:
                 )
             return record.access_token
         getter = getattr(self.store, "get_valid", None)
-        if callable(getter):
-            record = await getter(self.connection_id, self.refresh)
-            return str(record.access_token)
+        if getter is not None:
+            updated = getter(self.connection_id, self.refresh)
+            if asyncio.iscoroutine(updated):
+                updated = await updated
+            return str(updated.access_token)
         record = self.store.get(self.connection_id)
         if record is None:
             raise ConfigError(f"Подключение {self.connection_id!r} не авторизовано.")
@@ -118,6 +122,7 @@ class MetrikaClient:
     report_timeout: float = REPORT_TIMEOUT
     retries: int = DEFAULT_RETRIES
     cache_ttl: float = 0.0
+    connection_id: str = "default"
     transport: Transport = field(init=False)
     user_agent: str = "metrika-agent/0.1 (+https://github.com/; AI assistant integration)"
 
@@ -136,6 +141,7 @@ class MetrikaClient:
             base_url=self.base_url,
             default_headers={"Content-Type": JSON_CONTENT_TYPE, "User-Agent": self.user_agent},
             cache_ttl=self.cache_ttl,
+            connection_id=self.connection_id,
         )
 
     # --- Создание ------------------------------------------------------------
@@ -174,6 +180,7 @@ class MetrikaClient:
             "timeout": cfg.timeout,
             "retries": cfg.retries,
             "cache_ttl": cache_ttl,
+            "connection_id": connection_id,
             **overrides,
         }
         return cls(token=resolved, **params)
@@ -223,10 +230,9 @@ class MetrikaClient:
         """
 
         headers = {"Authorization": f"OAuth {await self._source.access_token()}"}
-        url = path if path.startswith("http") else path
         return await self.transport.request_json(
             method.upper(),
-            url,
+            path,
             params=params,
             json=payload,
             headers=headers,

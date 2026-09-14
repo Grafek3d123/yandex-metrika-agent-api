@@ -12,7 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from typing import Sequence
+from collections.abc import Sequence
 
 from yandex_metrika_agent.errors import AgentError
 from yandex_metrika_agent.planner import GoalPlanner
@@ -70,7 +70,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(json.dumps({"error": str(error)}, ensure_ascii=False), file=sys.stderr)
         return 1
     parser.error(f"Неизвестная команда: {args.command}")
-    return 1
 
 
 if __name__ == "__main__":

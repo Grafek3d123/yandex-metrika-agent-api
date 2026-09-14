@@ -1,148 +1,174 @@
-# Yandex Metrika Agent CLI
+# yandex-metrika-agent-api
 
-Агентский CLI для работы с API Яндекс.Метрики: счётчики, логины, визиты,
-источники, удержания, события, вебвизор, экшены, файлы, аудитории.
+AI-ориентированный интеграционный слой поверх API Яндекс Метрики
+(Management API + Reports API) для Python ≥ 3.11.
+
+Главный принцип: AI-агент оперирует **бизнес-понятиями** — сайт, счётчик, цель,
+визиты, посетители, страницы, источники, конверсия, период — а не `counterId`,
+`ym:s:visits`, `dimensions`, `filters`. Технические детали (эндпоинты, имена
+метрик, заголовки, retry, ошибки) скрыты внутри слоя.
 
 ## Установка
 
 ```bash
 pip install -e .
+# dev-зависимости (pytest, respx, ruff, mypy):
+pip install pytest pytest-asyncio respx ruff mypy
 ```
 
-## Настройка
+## Быстрый старт
 
-Требуется OAuth-токен Метрики: <https://oauth.yandex.ru/>.
+### AI Tool Layer (рекомендуемый вход для агента)
+
+```python
+import asyncio
+from yandex_metrika_agent import MetrikaClient, MetrikaTools
+
+async def main() -> None:
+    client = MetrikaClient(token="<OAUTH_TOKEN>")
+    tools = MetrikaTools(client)
+    try:
+        # Схемы всех 14 инструментов — зарегистрировать у AI-агента
+        specs = tools.specs()
+
+        # Бизнес-вызов: счётчик по домену, период словами
+        answer = await tools.call(
+            "metrika_get_traffic",
+            {"counter": "example.com", "date_from": "2026-09-01", "date_to": "2026-09-07"},
+        )
+        print(answer["status"])   # ok | needs_input | error
+        print(answer["data"])     # visits, users, pageviews, bounce_rate, ...
+
+        # Цель из человеческого описания; если данных не хватает — вопрос
+        answer = await tools.call(
+            "metrika_create_goal",
+            {"counter": "example.com", "description": "цель на отправку формы"},
+        )
+        # answer["status"] == "needs_input", answer["question"] == "Какое JS-событие..."
+    finally:
+        await client.aclose()
+
+asyncio.run(main())
+```
+
+### Сервисы напрямую
+
+```python
+from yandex_metrika_agent import (
+    CounterService, GoalService, ReportService, GoalPlanner, MetrikaClient,
+)
+
+client = MetrikaClient(token="...")
+counters = CounterService(client)
+counter = await counters.resolve_one("example.com")   # один счётчик по сайту
+
+goals = GoalService(client)
+result = await goals.ensure_goal(counter.id, url_goal(name="Спасибо", url="/thank-you"))
+# result.created — создана или уже существовала (идемпотентно)
+
+reports = ReportService(client)
+summary = await reports.get_traffic(counter.id, date_from="2026-09-01", date_to="2026-09-07")
+```
+
+### Планирование цели из фразы (CLI)
 
 ```bash
-metrika-agent config set-token            # интерактивно (скрытый ввод)
-metrika-agent config set-token --token ... --client-id ... --secret ...
-# либо переменные окружения:
-#   METRIKA_OAUTH_TOKEN, METRIKA_CLIENT_ID, METRIKA_CLIENT_SECRET, METRIKA_REDIRECT_URI
-metrika-agent config show                 # без секретов
-metrika-agent config test
-metrika-agent config reset
+python -m yandex_metrika_agent plan "цель при попадании на /thank-you"
+python -m yandex_metrika_agent plan "цель на отправку формы" --event submitForm
+# после установки доступно: ymetrika plan "..."
+# коды выхода: 0 — готово, 2 — нужно доуточнить, 1 — ошибка
 ```
 
-## Формат вывода
+## AI-инструменты (14)
 
-Полезная нагрузка всегда в поле `data`:
+| Инструмент | Назначение |
+| --- | --- |
+| `metrika_list_counters` | список счётчиков пользователя |
+| `metrika_get_counter` | один счётчик по id/домену/названию |
+| `metrika_list_goals` | цели счётчика |
+| `metrika_get_goal` | цель по id |
+| `metrika_create_goal` | создание цели из описания или явного типа (идемпотентно) |
+| `metrika_update_goal` | изменение цели (название, цена, избранное) |
+| `metrika_delete_goal` | удаление цели |
+| `metrika_get_report` | произвольный отчёт (человеческие имена метрик/измерений) |
+| `metrika_get_traffic` | сводка посещаемости |
+| `metrika_get_traffic_by_day` | динамика по дням |
+| `metrika_get_sources` | источники трафика |
+| `metrika_get_top_pages` | популярные страницы |
+| `metrika_get_goal_stats` | достижения и конверсия цели |
+| `metrika_compare_periods` | сравнение двух периодов |
+
+Единый конверт ответа:
 
 ```json
-{"ok": true, "data": {...}}
-{"ok": false, "error": {"type": "NotConfigured", "code": "not_configured", "message": "..."}}
+{"status": "ok", "data": {...}}
+{"status": "needs_input", "question": "...", "missing": ["event"]}
+{"status": "error", "error": {"error": "NotFoundError", "message": "...", "details": {}}}
 ```
 
-## Команды
+Правило безопасности: если для цели не хватает существенного значения (имя
+JS-события, URL, телефон), инструмент возвращает `needs_input` с вопросом и
+**не выдумывает** значение. Создание цели идемпотентно: повтор не создаёт
+дубликат (совпадение по типу и существенным параметрам).
 
-Справка по всем командам и параметрам: `metrika-agent --help`, `metrika-agent <cmd> --help`.
+Ядро независимо от MCP: реестр `Tool(name, description, inputSchema, handler)`
+со `specs()`/`call()` можно обернуть в MCP-сервер без переделки логики.
 
-### Счётчики и метаданные
-
-| Команда | API |
-| --- | --- |
-| `metrika-agent counters list` | `counters` |
-| `metrika-agent counters get` | `counters` |
-| `metrika-agent counters access` | `counters/access` |
-| `metrika-agent counters permissions` | `counters/permissions` |
-| `metrika-agent counters goals` | `goals` |
-| `metrika-agent counters labels` | `labels` |
-| `metrika-agent counters api-access` | `registry` |
-| `metrika-agent columns list` | `columns` |
-| `metrika-agent dictionary list` | `dictionary` |
-| `metrika-agent tracksites list` | `tracksites` |
-| `metrika-agent offline-segments list/download` | `offline-segments` |
-
-### Логины
-
-| Команда | API-метод |
-| --- | --- |
-| `metrika-agent logins visits-stream` | `visits` |
-| `metrika-agent logins visits` | `visits/download` |
-| `metrika-agent logins logins-stream` | `logins` |
-| `metrika-agent logins logins` | `logins/download` |
-| `metrika-agent logins sources` | `sources` |
-| `metrika-agent logins goals` | `goals` |
-| `metrika-agent logins retention` | `retention` |
-| `metrika-agent logins lookalike` | `lookalike` |
-| `metrika-agent logins events-stream` | `events` |
-| `metrika-agent logins events` | `events/download` |
-| `metrika-agent logins webvisor` | `webvisor` |
-| `metrika-agent logins webvisor-session` | `webvisor-session` |
-| `metrika-agent logins actions` | `actions` |
-| `metrika-agent logins files` | `files` |
-| `metrika-agent logins audiences` | `audiences` |
-
-### Управление сущностями
-
-`metrika-agent manage create|update|delete` с `--entity counter|goal|audience|offline-segment|column|tracksite`.
-`audience` и `offline-segment` поддерживают только `delete`.
-
-### Параметры `logins`
-
-- `--date1`, `--date2` (обязательны), `--limit` (по умолчанию 100)
-- `--metrics`, `--dimension`, `--goals`, `--audience-name`, `--segment-sequence`
-- `--session-access-pattern`, `--source`, `--source-goal-type`
-- `--retention-return-offset`, `--lookalike-start-offset`, `--lookalike-end-offset`
-- `--field`, `--trace-fields`, `--compact`
-- `--offset` + `--page-size` + `--max-records` — постраничная выгрузка
-- `--concatenate` — вместо JSON-массива печатать записи построчно (JSONL)
-- `--output FILE|dir/|-` — выгрузка (`download`-методы), `-` = stdout
-
-### Условные переходы (sequence)
-
-```bash
---segment-sequence 'goal:signup;within:30m'
---segment-sequence 'param:utm_source=telegram;within:1h'
---segment-sequence 'param:price>100;within:1d'
---segment-sequence 'sequence:start=param:page=/cart;limit=3'
---segment-sequence 'userSequence:start=goal:buy;limit=5'
-```
-
-`start=` принимает `goal:<имя>` или `param:<ключ><>=<|>|<><значение>`, либо `auto`
-(первое условие строки).
-
-## Ошибки и выгрузка
-
-| Код | Смысл | Действие агента |
-| --- | --- | --- |
-| `1` `api_error` | ошибка Метрики (4xx) | не повторять, проверить параметры |
-| `2` `quota_exceeded` | превышена квота запросов | `retry_after` из `details`, повторить позже |
-| `3` `timeout` | таймаут | повторить с экспоненциальной задержкой |
-| `4` `auth_error` | протух/неверный токен | `metrika-agent config test`, обновить токен |
-| `5` `not_configured` | нет конфигурации | настроить токен |
-| `6` `bad_request` | невалидные параметры CLI | исправить аргументы |
-| `7` `network_error` | сеть недоступна | повторить с экспоненциальной задержкой |
-
-Выгрузка: `--offset`/`--page-size` (или `--limit`+`--offset`) + `--max-records`
-для остановки, `--output` для сохранения. Прогресс — в `stderr`.
-
-## Переменные окружения
+## Настройка (переменные окружения)
 
 | Переменная | Назначение |
 | --- | --- |
-| `METRIKA_OAUTH_TOKEN` | OAuth-токен |
-| `METRIKA_CLIENT_ID`, `METRIKA_CLIENT_SECRET`, `METRIKA_REDIRECT_URI` | refresh-поток |
-| `METRIKA_CONFIG_FILE` | путь к конфигу (по умолчанию `~/.config/metrika-agent/config.json`) |
-| `METRIKA_BASE_URL` | альтернативный хост API |
-| `METRIKA_TIMEOUT` | таймаут запроса, сек |
-| `METRIKA_MAX_RETRIES` | число повторов сетевых/5xx ошибок |
+| `METRIKA_OAUTH_TOKEN` | готовый токен без OAuth-потока |
+| `YANDEX_CLIENT_ID`, `YANDEX_CLIENT_SECRET` | собственный OAuth-клиент Яндекса |
+| `YANDEX_DEVICE_FLOW` | device flow вместо browser-flow (`true`) |
+| `YANDEX_REDIRECT_URI` | callback (по умолчанию `http://localhost:8765/callback`) |
+| `METRIKA_TOKEN_KEY` | AES-GCM ключ хранилища (64 hex символа) |
+| `METRIKA_TOKEN_DIR` | каталог токенов (по умолчанию XDG `~/.config/metrika-agent/tokens`) |
+| `METRIKA_ENV` | `production` / `sandbox` |
+| `METRIKA_HTTP_TIMEOUT`, `METRIKA_HTTP_RETRIES` | таймаут и число повторов |
+| `METRIKA_LOG_LEVEL` | `INFO` / `DEBUG` |
+
+Скоупы OAuth-клиента: `metrika:read`, `metrika:write`.
+
+## Архитектура
+
+```
+AI Agent
+   ↓  MetrikaTools (14 инструментов, строгие JSON-схемы, ok/needs_input/error)
+Сервисы:  CounterService · GoalService(+GoalPlanner) · ReportService
+   ↓
+MetrikaClient            — заголовок Authorization, разбор JSON/ошибок
+   ↓
+Transport                — retry, backoff, кэш GET (по connection), single-flight, rate-limit
+   ↓
+HTTP API Яндекс Метрики  — Management v1 (/management/v1), Reports v1 (/stat/v1)
+
+OAuth / EncryptedFileStore — авторизация и безопасное хранение токенов (сквозной слой)
+```
+
+Подробности — в [docs/yandex-metrika-ai.md](docs/yandex-metrika-ai.md):
+OAuth-потоки, словарь метрик, DSL фильтров, поведение GoalPlanner, ошибки,
+ограничения API.
 
 ## Лимиты Метрики (из документации)
 
-- Интервалы дат: `days` 1–31, `weeks` 1–12, `months`/`quarters`/`years` 1–24.
-- `visits`/`logins`: ≤5 метрик и ≤2 измерений; `sources`/`goals`/`retention`:
-  ≤5 метрик и ≤5 измерений; `events`: ≤3 метрик и ≤5 измерений; `actions`: ≤3 и ≤3.
-- `webvisor`/`webvisor-session`: ≤1000 записей и ≤31 день; `webvisor-session` — только 1 день.
-- `visits/download`: ≤100 000 записей, `logins/download`: ≤1 000 000.
-- `lookalike`: ≤100 записей, ≥1000 сегментов в источнике, `retention-return-offset` 1–28.
-- `events/download`: ≤30 млн записей и ≤90 дней, только `ym:s:visit`, `ym:s:click`, `ym:s:search`.
-- `logins-stream`/`events-stream` — платный тариф.
-- `counters list`: не более 1 000 000 счётчиков.
-- Квоты: 1000 запросов/мин, 250 000 000 единиц/сутки; цена запроса 1–25 единиц.
+- До 20 метрик и до 10 измерений в запросе отчёта; единый префикс `ym:s:`/`ym:pv:`.
+- До 20 условий фильтра, длина строки фильтра до 10 000 символов.
+- Квоты (запросы/сек на IP, параллельные запросы, отчёты/5 мин, 5 000
+  запросов/сутки на пользователя) обрабатываются rate-limiter транспорта.
 
-## Тесты
+## Тесты и качество
 
 ```bash
-pip install -e ".[dev]"
-pytest
+pytest          # 150+ unit-тестов на respx (без реальных credentials)
+ruff check yandex_metrika_agent
+mypy            # strict
 ```
+
+## Статус и roadmap
+
+Реализовано: OAuth+PKCE, шифрованное хранилище, транспорт, клиент, сервисы
+(счётчики/цели/отчёты), GoalPlanner, AI Tool Layer, 150+ тестов.
+
+В планах: полный агентский CLI (`counters|logins|manage|config`), MCP-обёртка,
+Logs API, Segments, Imports, offline conversions.

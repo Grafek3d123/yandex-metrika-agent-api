@@ -76,7 +76,7 @@ CONDITION_TYPES: tuple[str, ...] = VALUE_CONDITION_TYPES + SPECIAL_CONDITION_TYP
 
 #: Цели, у которых условия обязательны.
 GOAL_TYPES_REQUIRING_CONDITIONS: frozenset[str] = frozenset(
-    {"action", "url", "phone", "email", "messenger", "file", "search", "social"}
+    {"action", "url", "phone", "email", "messenger", "file", "search", "social", "chat"}
 )
 
 #: Цели, которым вместо условий нужен числовой параметр.
@@ -186,16 +186,24 @@ class GoalCondition(_Model):
     Для целей ``action``/``url``/``phone``/``email`` поле ``type`` принимает
     ``exact|start|contain|regexp``, значение — в поле ``url`` (так исторически
     называется поле API и для имени JS-события, и для номера телефона).
+
+    Для цели ``chat`` официальная схема использует ``field``
+    (``chat_answered``/``chat_platform``/``chat_tag``) со значениями
+    ``answered``/``platform``/``tag``.
     """
 
-    type: str
+    type: str | None = None
     url: str | None = None
     field: str | None = None
     answered: bool | None = None
+    platform: str | None = None
+    tag: str | None = None
 
     @field_validator("type")
     @classmethod
-    def _known_type(cls, value: str) -> str:
+    def _known_type(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
         lowered = value.strip().lower()
         if lowered not in CONDITION_TYPES:
             raise ValueError(
@@ -203,21 +211,44 @@ class GoalCondition(_Model):
             )
         return lowered
 
-    def signature(self) -> tuple[str, str]:
+    @model_validator(mode="after")
+    def _has_value(self) -> GoalCondition:
+        """Условие должно что-то содержать: оператор со значением или поле чата."""
+
+        if self.type is None and not any(
+            v is not None for v in (self.url, self.field, self.answered, self.platform, self.tag)
+        ):
+            raise ValueError("Условие цели пустое: нужен type/url или поля чата.")
+        return self
+
+    def signature(self) -> tuple[Any, ...]:
         """Канонический вид для сравнения и защиты от дублей."""
 
-        return (self.type, (self.url or "").strip().lower())
+        return (
+            self.type or "",
+            (self.url or "").strip().lower(),
+            (self.field or "").strip().lower(),
+            self.answered,
+            (self.platform or "").strip().lower(),
+            (self.tag or "").strip().lower(),
+        )
 
     def describe(self) -> str:
         """Человекочитаемое описание условия."""
 
+        if self.field == "chat_platform":
+            return f"платформа чата: {self.platform or '?'}"
+        if self.field == "chat_answered":
+            return "чат отвечен" if self.answered else "чат без ответа"
+        if self.field == "chat_tag":
+            return f"метка чата: {self.tag or '?'}"
         labels = {
             "exact": "совпадает с",
             "start": "начинается с",
             "contain": "содержит",
             "regexp": "соответствует регулярному выражению",
         }
-        label = labels.get(self.type, self.type)
+        label = labels.get(self.type or "", self.type or "условие")
         value = self.url if self.url is not None else ""
         return f"{label} «{value}»" if value else label
 
@@ -305,8 +336,9 @@ class Goal(_Model):
     def signature(self) -> tuple[Any, ...]:
         """Канонический отпечаток цели для защиты от дублей.
 
-        Дубликаты в Метрике отличаются только ``id``, поэтому в подпись входят
-        тип, название (в нижнем регистре) и существенные параметры.
+        Название в подпись не входит: идемпотентность структурная — цель
+        считается существующей по типу и существенным параметрам (условия,
+        шаги, глубина, длительность), а не по имени.
         """
 
         conditions = sorted(
@@ -318,7 +350,6 @@ class Goal(_Model):
         )
         return (
             self.type,
-            self.name.strip().lower(),
             tuple(conditions),
             steps,
             self.depth,
@@ -414,11 +445,17 @@ class MetricItem(_Model):
 
 
 class MetricGroupPage(_Model):
-    """Ответ ``GET /stat/v1/metrics?counterId=...``.
+    """Внешний каталог метрик/измерений для сверки псевдонимов.
 
-    Метрика возвращает метрики и измерения группами: стандартные, эксперимен-
-    тальные, сегментированные, вычисляемые. Для агента важна не группировка,
-    а возможность ответить «такой метрики нет, но есть вот такие».
+    Публичный Reports API НЕ отдаёт список метрик по HTTP — справочник
+    опубликован только в документации (``stat/attrandmetr/dim_all``). Эта
+    модель описывает каталог, который интегратор может получить из внешнего
+    источника (собственная БД, внутренний справочник, будущий endpoint), и
+    передать в :class:`~yandex_metrika_agent.metrics.MetricDirectory`.
+
+    Метрика группирует метрики: стандартные, экспериментальные, сегменты,
+    вычисляемые. Для агента важна не группировка, а возможность ответить
+    «такой метрики нет, но есть вот такие».
     """
 
     counter_id: int | None = None
@@ -487,11 +524,15 @@ class MetricGroupPage(_Model):
 
 
 class ReportRow(_Model):
-    """Строка отчёта: измерения, метрики, total."""
+    """Строка отчёта ``StaticRow``: значения группировок и метрик.
+
+    Формат подтверждён ответом ``GET /stat/v1/data``: каждое значение
+    группировки — объект с обязательным ``name`` и возможными дополнительными
+    полями (``id`` и т. п.), метрики — числа в порядке параметра ``metrics``.
+    """
 
     dimensions: list[dict[str, Any]] = Field(default_factory=list)
     metrics: list[float | int | str | None] = Field(default_factory=list)
-    total: float | int | None = None
 
     @property
     def labels(self) -> list[str]:
@@ -501,48 +542,56 @@ class ReportRow(_Model):
         for dimension in self.dimensions:
             name = dimension.get("name")
             if name is None:
-                name = (dimension.get("id") or {}).get("name") if isinstance(
-                    dimension.get("id"), dict
-                ) else dimension.get("id")
+                ident = dimension.get("id")
+                name = ident.get("name") if isinstance(ident, dict) else ident
             labels.append(str(name if name is not None else "?"))
         return labels
 
 
-class ReportTotals(_Model):
-    """Итоги отчёта."""
+class ReportQuery(_Model):
+    """Эхо исходного запроса в поле ``query`` ответа ``/stat/v1/data``."""
 
-    metrics: list[float | int | str | None] = Field(default_factory=list)
-
-
-class ReportData(_Model):
-    """Таблица отчёта."""
-
-    rows: list[ReportRow] = Field(default_factory=list)
-    total_rows: int | None = None
-    rows_limit: int | None = None
-    totals: ReportTotals | None = None
-    min_date: str | None = None
-    max_date: str | None = None
+    timezone: str | None = None
+    preset: str | None = None
+    dimensions: list[str] = Field(default_factory=list)
+    metrics: list[str] = Field(default_factory=list)
+    sort: list[str] = Field(default_factory=list)
+    date1: str | None = None
+    date2: str | None = None
+    filters: str | None = None
+    limit: int | None = None
+    offset: int | None = None
 
 
 class Report(_Model):
-    """Ответ Reports API (стандартный или кастомный отчёт)."""
+    """Ответ ``GET /stat/v1/data`` (официальная схема Reports API).
 
-    data: ReportData | None = None
+    Поля соответствуют документации ``.../stat/openapi/data_1``: таблица
+    ``data``, плоский массив итогов ``totals``, признаки семплирования
+    ``sampled``/``sample_share``, ``total_rows`` и эхо запроса ``query``.
+    ``metric_names``/``dimension_names`` Метрика отдаёт в фактических ответах;
+    если их нет, сервис подставляет имена из запроса.
+    """
+
+    query: ReportQuery | None = None
+    data: list[ReportRow] = Field(default_factory=list)
     total_rows: int | None = None
-    rows: int | None = None
+    total_rows_rounded: bool | None = None
+    sampled: bool | None = None
+    contains_sensitive_data: bool | None = None
+    sample_share: float | None = None
+    sample_size: int | None = None
+    sample_space: int | None = None
+    data_lag: int | bool | None = None
+    totals: list[float | int | str | None] = Field(default_factory=list)
     metric_names: list[str] = Field(default_factory=list)
     dimension_names: list[str] = Field(default_factory=list)
-    is_empty: bool | None = None
-    pending_corrections: bool | None = None
 
     @property
     def is_empty_report(self) -> bool:
-        """Отчёт пуст (нет данных за период)."""
+        """Отчёт пуст (нет строк за период)."""
 
-        if self.is_empty:
-            return True
-        return not (self.data and self.data.rows)
+        return not self.data
 
 
 class ReportTask(_Model):
@@ -556,14 +605,7 @@ class ReportTask(_Model):
     params: dict[str, Any] | None = None
 
 
-#: Как сравнивать период отчёта с предыдущим.
-ReportComparison = Literal["none", "previous_period", "previous_year"]
-
-#: Доступные расширения выгрузки.
-ReportExtension = Literal["csv", "tsv", "csvn", "csvsemit", "googleads", "yandexads"]
-
-#: Способы сведения визитов/сессий в отчётах по дням.
-ReportVisible = Literal["all", "first", "week", "month", "quarter", "year", "day"]
+#: Задачи асинхронных отчётов описаны в docs (``POST /stat/v1/async``).
 
 
 class ReportLimits(_Model):
@@ -607,10 +649,10 @@ class ReportCapabilities(_Model):
 class ReportCommand(_Model):
     """Запрос отчёта в том виде, в каком его формулирует человек или агент.
 
-    Это не дословный параметр API, а намерение: «сколько платящих визитов за
-    прошлую неделю по来源». :meth:`to_params` превращает его в параметры
-    ``GET /stat/v1/report``, а :meth:`describe` — в строку пояснения для
-    пользователя.
+    Это не дословный параметр API, а намерение: «сколько заявок за прошлую
+    неделю». :meth:`to_params` превращает его в параметры ``GET /stat/v1/data``
+    (параметры других эндпоинтов — ``/comparison``, ``/bytime`` — здесь не
+    хранятся), а :meth:`describe` — в строку пояснения для пользователя.
     """
 
     counter_id: int
@@ -619,23 +661,26 @@ class ReportCommand(_Model):
     date1: date | None = None
     date2: date | None = None
     filters: list[str] = Field(default_factory=list)
-    segment: list[str] = Field(default_factory=list)
-    visualization: list[str] = Field(default_factory=list)
     sort_by: list[str] = Field(default_factory=list)
     limit: int | None = None
     offset: int | None = None
-    compare: ReportComparison = "none"
-    totals: bool = True
-    visible: str | None = None
-    precision: int | None = None
-    description: str | None = None
-    format: str | None = None
-    report_name: str | None = None
-    include: list[str] = Field(default_factory=list)
-    user: str | None = None
-    extend: list[str] = Field(default_factory=list)
+    #: Язык значений группировок (``ru``/``en``/``tr``).
+    lang: str | None = None
+    #: Часовой пояс периода выборки в формате ``±hh:mm``.
+    timezone: str | None = None
+    #: Включать строки с неопределённым значением первой группировки.
+    include_undefined: bool | None = None
+    #: Размер выборки (семплирование), например ``1000000``.
+    accuracy: int | None = None
+    #: Разрешить API увеличить accuracy до рекомендованного.
+    proposed_accuracy: bool | None = None
+    #: Шаблон отчёта (``sources_summary``, ``goals`` ...).
+    preset: str | None = None
+    #: Логины клиентов Директа для отчёта «Директ-расходы».
+    direct_client_logins: list[str] = Field(default_factory=list)
 
-    @field_validator("metrics", "dimensions", "filters", "sort_by", "include", mode="before")
+    @field_validator("metrics", "dimensions", "filters", "sort_by", "direct_client_logins",
+                     mode="before")
     @classmethod
     def _as_list(cls, value: Any) -> list[Any]:
         """Разрешить одиночную строку вместо списка."""
@@ -655,6 +700,13 @@ class ReportCommand(_Model):
             raise ValueError("limit должен быть больше нуля.")
         return value
 
+    @field_validator("offset", mode="after")
+    @classmethod
+    def _check_offset(cls, value: int | None) -> int | None:
+        if value is not None and value < 1:
+            raise ValueError("offset в Reports API начинается с 1.")
+        return value
+
     @model_validator(mode="after")
     def _check_dates(self) -> ReportCommand:
         if (self.date1 is None) != (self.date2 is None):
@@ -668,7 +720,7 @@ class ReportCommand(_Model):
         """Период одной строкой для вывода."""
 
         if not self.date1 or not self.date2:
-            return "последние 30 дней"
+            return "последние 7 дней (по умолчанию API)"
         if self.date1 == self.date2:
             return self.date1.isoformat()
         return f"{self.date1.isoformat()} — {self.date2.isoformat()}"
@@ -682,12 +734,12 @@ class ReportCommand(_Model):
                 "dimensions": _dedupe(self.dimensions),
                 "filters": _dedupe(self.filters),
                 "sort_by": _dedupe(self.sort_by),
-                "include": _dedupe(self.include),
+                "direct_client_logins": _dedupe(self.direct_client_logins),
             }
         )
 
     def to_params(self) -> dict[str, Any]:
-        """Собрать параметры запроса Reports API.
+        """Собрать параметры ``GET /stat/v1/data``.
 
         Пустые значения опускаются: Метрика по-разному реагирует на пустые
         строки в параметрах, и лучше их не передавать вовсе.
@@ -697,9 +749,8 @@ class ReportCommand(_Model):
         if not command.metrics:
             raise ValueError("Для отчёта нужна хотя бы одна метрика.")
         params: dict[str, Any] = {
-            "counterId": command.counter_id,
+            "id": command.counter_id,
             "metrics": ",".join(command.metrics),
-            "format": command.format or "json",
         }
         if command.dimensions:
             params["dimensions"] = ",".join(command.dimensions)
@@ -708,32 +759,26 @@ class ReportCommand(_Model):
             params["date2"] = command.date2.isoformat()
         if command.filters:
             params["filters"] = ";".join(command.filters)
-        if command.segment:
-            params["segment"] = ",".join(command.segment)
-        if command.visualization:
-            params["visualization"] = ",".join(command.visualization)
         if command.sort_by:
             params["sort"] = ",".join(command.sort_by)
         if command.limit is not None:
             params["limit"] = command.limit
         if command.offset:
             params["offset"] = command.offset
-        if command.compare != "none":
-            params["compare"] = command.compare
-        if not command.totals:
-            params["totals"] = "false"
-        if command.visible:
-            params["visible"] = command.visible
-        if command.precision is not None:
-            params["precision"] = command.precision
-        if command.description:
-            params["description"] = command.description
-        if command.report_name:
-            params["reportName"] = command.report_name
-        if command.include:
-            params["include"] = ",".join(command.include)
-        if command.user:
-            params["user"] = command.user
+        if command.lang:
+            params["lang"] = command.lang
+        if command.timezone:
+            params["timezone"] = command.timezone
+        if command.include_undefined is not None:
+            params["include_undefined"] = "true" if command.include_undefined else "false"
+        if command.accuracy is not None:
+            params["accuracy"] = command.accuracy
+        if command.proposed_accuracy is not None:
+            params["proposed_accuracy"] = "true" if command.proposed_accuracy else "false"
+        if command.preset:
+            params["preset"] = command.preset
+        if command.direct_client_logins:
+            params["direct_client_logins"] = ",".join(command.direct_client_logins)
         return params
 
     def describe(self) -> str:
@@ -745,8 +790,6 @@ class ReportCommand(_Model):
         parts.append(f"период: {self.period}")
         if self.filters:
             parts.append(f"фильтры: {'; '.join(self.filters)}")
-        if self.compare != "none":
-            parts.append("сравнение: " + ("с прошлым годом" if self.compare == "previous_year" else "с прошлым периодом"))
         return "; ".join(parts)
 
 
@@ -806,8 +849,10 @@ __all__ = [
     "GoalStep",
     "GoalsPage",
     "Report",
-    "ReportData",
+    "ReportCapabilities",
+    "ReportCommand",
+    "ReportLimits",
+    "ReportQuery",
     "ReportRow",
     "ReportTask",
-    "ReportTotals",
 ]

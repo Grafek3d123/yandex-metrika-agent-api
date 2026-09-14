@@ -13,9 +13,9 @@ CLI и план развития.
 
 ## 1. Статус
 
-Реализован и работает **MVP интеграционного слоя**:
+Реализован и работает **MVP интеграционного слоя + AI Tool Layer**:
 
-- OAuth (Authorization Code + PKCE, loopback-callback; ручная и device-альтернативы);
+- OAuth (Authorization Code + PKCE S256, loopback-callback; ручная и device-альтернативы);
 - зашифрованное хранилище токенов (AES-GCM, на подключение);
 - типизированный транспорт (retry, backoff, кэш GET, дедупликация, rate-limit);
 - клиент API Метрики (заголовок `Authorization: OAuth`, разбор ошибок);
@@ -24,9 +24,12 @@ CLI и план развития.
 - **GoalPlanner** — перевод человеческого описания в намерение цели с запросом
   недостающих данных;
 - сервис **отчётов**: универсальный `get_report` + AI-friendly методы;
+- **AI Tool Layer**: 14 инструментов со строгими JSON-схемами и конвертом
+  `ok` / `needs_input` / `error` (фасад `MetrikaTools`);
 - словарь человеческих имён метрик/измерений;
 - безопасный **DSL фильтров**;
 - нормализованные типизированные ошибки;
+- **тесты**: 150+ unit-тестов (pytest + respx);
 - CLI `python -m yandex_metrika_agent` (планирование цели из фразы).
 
 Идентификаторы метрик/измерений/фильтров и эндпоинты взяты **только** из
@@ -136,7 +139,8 @@ OAuth-клиента в конфигурации Яндекса. Если пол
 | `counters.py` | `CounterService`: список/чтение/выбор счётчика по сайту, `MetrikaCounter`. |
 | `reports.py` | `ReportService`: `get_report` + AI-friendly методы, разбор ответа. |
 | `planner.py` | `GoalPlanner`: описание цели → `GoalPlan` (ready/needs_input) → `Goal`. |
-| `__init__.py` | Публичный API пакета (ошибки, модели, планировщик). |
+| `ai_tools/` | **AI Tool Layer**: `base.py` (Tool/ToolRegistry/ToolResult), `counters.py`, `goals.py`, `analytics.py` — 14 инструментов со строгими схемами. |
+| `__init__.py` | Публичный API пакета (ошибки, модели, сервисы, `MetrikaTools`). |
 | `__main__.py` | CLI `python -m yandex_metrika_agent` / `ymetrika`. |
 
 ---
@@ -357,37 +361,58 @@ python -m yandex_metrika_agent plan "цель на отправку формы" 
 ## 17. Тестирование
 
 Стек: `pytest` + `pytest-asyncio` + `respx` (мок HTTP, без реальных credentials).
-Планируемое покрытие (см. §23 задания): заголовки OAuth, список счётчиков/целей,
-создание action/url-цели, детект дубликата, отчёты traffic/sources/goal-stats,
-конверсия фильтра, ошибки 401/403/429, кэш, retry.
 
-> **Текущий статус:** unit-тесты ещё **не добавлены** (папка `tests/` не создана).
-> Реализованные модули проверены ручными прогонами (GoalPlanner, словарь метрик,
-> DSL фильтров, нормализация счётчика, CLI) и `compileall`/`mypy`.
+**Реализовано:** `tests/` содержит 10 модулей и покрывает:
+
+| Модуль | Что проверяется |
+| --- | --- |
+| `test_crypto.py` | AES-GCM roundtrip, wrong-key, повреждённый payload, размер ключа |
+| `test_tokens.py` | шифрование на диске, wrong-key, `get_valid` (sync/async refresh), параллельное продление без гонки, сокрытие секретов в `repr`/`public` |
+| `test_oauth.py` | state, PKCE (S256-челлендж), разбор callback (state mismatch, error), обмен кода с `code_verifier` (respx), проверка скоупов (`ScopeError`) |
+| `test_counters.py` | новый формат `counters`, legacy `content`, `site2`/mirrors, `resolve` (точное/частичное/несколько/нет) |
+| `test_goals.py` | CRUD, `ensure_goal` (дубликат пропущен, name-warning, создание), сигнатуры |
+| `test_reports.py` | перевод человеческих имён, `rows_as_dicts`, `get_traffic`, `get_sources`, `get_goal_stats`, `compare_periods`, смешение `ym:s:`/`ym:pv:` запрещено |
+| `test_transport.py` | retry 5xx, отказ от retry 404, 429, кэш GET, изоляция кэша по connection, single-flight, `Retry-After`, `wait_async_report` |
+| `test_client.py` | заголовок `Authorization: OAuth`, `from_settings`, отсутствие токена, POST-тело, типизированные ошибки |
+| `test_metrics.py` | алиасы, сквозные идентификаторы, метрики целей, `humanize`, дедупликация |
+| `test_filters.py` | все операторы DSL, NOT/скобки, экранирование кавычек, лимиты 20 условий |
+| `test_planner.py` | ready/needs_input/unknown, извлечение URL/телефона/минут, chat/payment_system, запрет угадывания |
+| `test_ai_tools.py` | 14 инструментов, строгие схемы (`additionalProperties: false`), конверты ok/needs_input/error |
+
+Запуск: `pytest` (конфигурация в `pyproject.toml`).
 
 ---
 
 ## 18. Что реализовано и что в планах
 
-**Реализовано (MVP):** OAuth + PKCE/loopback/device; зашифрованное хранилище и
-много пользователей; транспорт (retry/кэш/дедуп/rate-limit); клиент; сервис
-счётчиков с выбором по сайту; CRUD целей + 14 конструкторов + идемпотентность;
-GoalPlanner; сервис отчётов (`get_report` + 6 AI-friendly); словарь метрик; DSL
-фильтров; нормализованные ошибки; CLI.
+**Реализовано (MVP + AI Tool Layer):**
 
-**Планами (не реализовано):**
+- OAuth + PKCE (S256)/loopback/device; проверка `state`; проверка выданных скоупов;
+- зашифрованное хранилище и много пользователей (`connection_id`);
+- транспорт (retry/кэш по connection/single-flight/rate-limit/`Retry-After`);
+- клиент (`Authorization: OAuth`, `from_settings`, типизированные ошибки);
+- сервис счётчиков с выбором по сайту (`resolve`/`resolve_one`, `site2`, mirrors);
+- CRUD целей + конструкторы 12 типов + структурная идемпотентность (`ensure_goal`
+  по сигнатуре типа/условий, name-warning);
+- GoalPlanner (ready/needs_input/unknown, без угадывания значений);
+- сервис отчётов (`get_report` + AI-friendly: traffic, traffic_by_day, sources,
+  top_pages, goal_stats, compare_periods);
+- словарь метрик (static aliases; live-каталог — через внешний `MetricGroupPage`);
+- DSL фильтров (официальные операторы, NOT, скобки, экранирование);
+- **AI Tool Layer** (`yandex_metrika_agent.ai_tools`): 14 инструментов со строгими
+  JSON-схемами и единым конвертом `ok` / `needs_input` / `error`; фасад `MetrikaTools`;
+- тесты: 150+ unit-тестов на respx (см. §17).
 
-- **AI Tool Layer** — реестр инструментов со строгими JSON-схемами поверх сервисов
-  (`metrika_list_counters`, `metrika_get_counter`, `metrika_list_goals`,
-  `metrika_create_goal`, `metrika_update_goal`, `metrika_delete_goal`,
-  `metrika_get_report`, `metrika_get_traffic`, `metrika_get_sources`,
-  `metrika_get_pages`, `metrika_get_goal_stats`, `metrika_compare_periods`).
-- **Фасад `YandexMetrikaService`**, объединяющий сервисы за одним интерфейсом.
-- **unit/integration-тесты** (папка `tests/`).
-- Расширения после MVP: Logs API, Segments, Imports, offline conversions.
+**В планах (не реализовано):**
 
-Ядро намеренно **независимо от MCP**: это обычный клиент + сервисы + (в планах)
-реестр инструментов. MCP можно надеть сверху позже без переделки логики.
+- полный агентский CLI из README (`counters|logins|manage|config`);
+- MCP-обёртка над реестром инструментов;
+- фасад `YandexMetrikaService` (частично закрыт `MetrikaTools`);
+- расширения: Logs API, Segments, Imports, offline conversions.
+
+Ядро намеренно **независимо от MCP**: `MetrikaTools` — обычный реестр
+`Tool(name, description, inputSchema, handler)`; MCP-сервер может слушать тот же
+реестр через `specs()`/`call()` без переделки логики.
 
 ---
 

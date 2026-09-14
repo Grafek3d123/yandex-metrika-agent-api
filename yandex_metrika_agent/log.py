@@ -13,7 +13,8 @@
 from __future__ import annotations
 
 import logging as std_logging
-from typing import Any, Mapping
+from collections.abc import Mapping
+from typing import Any
 
 #: Ключи запросов/форм, значения которых нельзя писать в лог.
 SENSITIVE_KEYS: frozenset[str] = frozenset(
@@ -44,7 +45,7 @@ def setup_logging(level: str = "INFO") -> None:
     Уровень берётся из конфигурации; неизвестное значение приводит к INFO.
     """
 
-    global _configured  # noqa: PLW0603 - идемпотентная настройка root-логгера
+    global _configured
     numeric = std_logging.getLevelNamesMapping().get(level.upper(), std_logging.INFO)
     std_logging.basicConfig(
         level=numeric,

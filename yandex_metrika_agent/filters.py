@@ -1,16 +1,25 @@
 """DSL фильтров Reports API.
 
-Метрика использует собственный синтаксис параметра ``filters``
-(``https://yandex.com/dev/metrika/ru/stat/``):
+Операторы проверены по официальному списку
+``https://yandex.com/dev/metrika/ru/stat/relations``:
 
 * ``field=='value'`` — равенство;
 * ``field!='value'`` — неравенство;
-* ``field@'substr'`` — содержит подстроку;
-* ``field!.@'substr'`` — не содержит;
-* ``field=.('a','b')`` — значение из перечисления;
-* ``field>n`` — сравнение числа (например ``ym:s:pageViews>5``);
-* ``field=n`` / ``field!n`` — пусто / не пусто;
-* условия соединяются ``AND`` (и, реже, ``OR``), допустимы скобки.
+* ``field=@'substr'`` — является подстрокой;
+* ``field!@'substr'`` — не является подстрокой;
+* ``field=*'prefix*'`` — «равно с поиском по ``*``» (шаблон; «начинается с»
+  выражается префиксом со звёздочкой);
+* ``field=~'re'`` / ``field!~'re'`` — регулярное выражение / не попадает;
+* ``field=.('a','b')`` — встречается среди значений (до 100 значений);
+* ``field!.('a','b')`` — не встречается среди значений;
+* ``field>N``, ``field>=N``, ``field<N``, ``field<=N`` — сравнения;
+* условия соединяются ``AND``/``OR``, есть унарный ``NOT`` и скобки
+  (``https://yandex.com/dev/metrika/ru/stat/segmentation``).
+
+Оператора «пусто/не пусто» в актуальном API нет и реализован он не будет:
+неопределённые значения группировок — это конкретные значения (например
+``undefined`` у источников трафика), а их попадание в отчёт регулируется
+параметром ``include_undefined``.
 
 Агенту нельзя давать свободно собирать такую строку — это главный источник
 ошибок. Здесь есть типизированный :class:`Filter`: вызывающий описывает поле,
@@ -28,26 +37,22 @@ from enum import Enum
 from yandex_metrika_agent.errors import ValidationError
 from yandex_metrika_agent.metrics import MetricDirectory
 
-#: Значение-заглушка для операторов «пусто/не пусто».
-_NULL_TOKEN = "n"
-
 
 class Operator(str, Enum):
-    """Операторы фильтра, доступные агенту."""
+    """Операторы фильтра, доступные агенту (официальный список Метрики)."""
 
     EQUALS = "equals"
     NOT_EQUALS = "not_equals"
     CONTAINS = "contains"
     NOT_CONTAINS = "not_contains"
     STARTS_WITH = "starts_with"
+    REGEXP = "regexp"
     GREATER = "greater"
     GREATER_OR_EQUAL = "greater_or_equal"
     LESS = "less"
     LESS_OR_EQUAL = "less_or_equal"
     IN = "in"
     NOT_IN = "not_in"
-    IS_NULL = "is_null"
-    IS_NOT_NULL = "is_not_null"
 
     @classmethod
     def parse(cls, value: object) -> Operator:
@@ -66,25 +71,34 @@ class Operator(str, Enum):
             "ne": cls.NOT_EQUALS,
             "не_равно": cls.NOT_EQUALS,
             "не равно": cls.NOT_EQUALS,
-            "@": cls.CONTAINS,
+            "=@": cls.CONTAINS,
             "contains": cls.CONTAINS,
             "содержит": cls.CONTAINS,
+            "подстрока": cls.CONTAINS,
             "!@": cls.NOT_CONTAINS,
             "!contains": cls.NOT_CONTAINS,
+            "не_содержит": cls.NOT_CONTAINS,
             "не содержит": cls.NOT_CONTAINS,
+            "=*": cls.STARTS_WITH,
+            "starts_with": cls.STARTS_WITH,
+            "starts with": cls.STARTS_WITH,
+            "начинается": cls.STARTS_WITH,
+            "шаблон": cls.STARTS_WITH,
+            "=~": cls.REGEXP,
+            "regex": cls.REGEXP,
+            "регулярное": cls.REGEXP,
             ">": cls.GREATER,
             ">=": cls.GREATER_OR_EQUAL,
             "<": cls.LESS,
             "<=": cls.LESS_OR_EQUAL,
             "in": cls.IN,
             "oneof": cls.IN,
-            "не в": cls.NOT_IN,
-            "null": cls.IS_NULL,
-            "is null": cls.IS_NULL,
-            "пусто": cls.IS_NULL,
-            "notnull": cls.IS_NOT_NULL,
-            "is not null": cls.IS_NOT_NULL,
-            "не пусто": cls.IS_NOT_NULL,
+            "=.": cls.IN,
+            "в_списке": cls.IN,
+            "не_в": cls.NOT_IN,
+            "!." : cls.NOT_IN,
+            "not_in": cls.NOT_IN,
+            "not in": cls.NOT_IN,
         }
         key = synonyms.get(text, text.replace(" ", "_"))
         try:
@@ -104,6 +118,7 @@ _SCALAR_OPS = frozenset(
         Operator.CONTAINS,
         Operator.NOT_CONTAINS,
         Operator.STARTS_WITH,
+        Operator.REGEXP,
         Operator.GREATER,
         Operator.GREATER_OR_EQUAL,
         Operator.LESS,
@@ -113,9 +128,6 @@ _SCALAR_OPS = frozenset(
 
 #: Операторы, которым нужно перечисление значений.
 _MULTI_OPS = frozenset({Operator.IN, Operator.NOT_IN})
-
-#: Операторы без значения.
-_VALUELESS_OPS = frozenset({Operator.IS_NULL, Operator.IS_NOT_NULL})
 
 
 def _escape(value: str) -> str:
@@ -135,12 +147,14 @@ class Filter:
     Args:
         field: человеческое имя измерения (``traffic_source``) или ``ym:s:...``.
         operator: :class:`Operator` или его строковый синоним.
-        value: скаляр, список (для ``in``/``not_in``) или ``None`` (для is_null).
+        value: скаляр или список (для ``in``/``not_in``).
+        negate: обернуть условие в официальный унарный ``NOT(...)``.
     """
 
     field: str
     operator: Operator
     value: object = None
+    negate: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "operator", Operator.parse(self.operator))
@@ -162,18 +176,25 @@ class Filter:
                     f"Оператору {op.value} нужен непустой список значений.",
                     details={"field": self.field, "operator": op.value},
                 )
-        elif op in _VALUELESS_OPS:
-            if self.value not in (None, ""):
+            if len(self.value) > 100:
                 raise ValidationError(
-                    f"Оператор {op.value} не принимает значение.",
-                    details={"field": self.field, "operator": op.value},
+                    "В одном условии фильтрации не больше 100 значений.",
+                    details={"field": self.field, "operator": op.value, "count": len(self.value)},
                 )
 
     # --- Рендер --------------------------------------------------------------
 
     def render(self, directory: MetricDirectory | None = None) -> str:
-        """Собрать строку условия; человеческое имя поля переводит ``directory``."""
+        """Собрать строку условия; человеческое имя поля переводит ``directory``.
 
+        При ``negate=True`` условие оборачивается официальным
+        ``NOT(...)`` (унарный оператор из документации по сегментации).
+        """
+
+        condition = self._render_condition(directory)
+        return f"NOT({condition})" if self.negate else condition
+
+    def _render_condition(self, directory: MetricDirectory | None = None) -> str:
         resolver = directory or MetricDirectory()
         field = resolver.dimension(self.field, allow_unknown=True)
         op = self.operator
@@ -182,13 +203,20 @@ class Filter:
         if op is Operator.NOT_EQUALS:
             return f"{field}!='{_escape(str(self.value))}'"
         if op is Operator.CONTAINS:
-            return f"{field}@'{_escape(str(self.value))}'"
+            return f"{field}=@'{_escape(str(self.value))}'"
         if op is Operator.NOT_CONTAINS:
-            return f"{field}!.@'{_escape(str(self.value))}'"
+            return f"{field}!@'{_escape(str(self.value))}'"
         if op is Operator.STARTS_WITH:
-            # У Метрики нет отдельного «начинается с» — моделируем регуляркой.
-            return f"{field}=~'^{_escape(str(self.value))}'"
-        if op in {Operator.GREATER, Operator.GREATER_OR_EQUAL, Operator.LESS, Operator.LESS_OR_EQUAL}:
+            # Официальный оператор «равно с поиском по *»: префикс + шаблон.
+            return f"{field}=*'{_escape(str(self.value))}*'"
+        if op is Operator.REGEXP:
+            return f"{field}=~'{_escape(str(self.value))}'"
+        if op in {
+            Operator.GREATER,
+            Operator.GREATER_OR_EQUAL,
+            Operator.LESS,
+            Operator.LESS_OR_EQUAL,
+        }:
             symbol = {
                 Operator.GREATER: ">",
                 Operator.GREATER_OR_EQUAL: ">=",
@@ -198,11 +226,7 @@ class Filter:
             return f"{field}{symbol}{_number(self.value, field=field)}"
         if op is Operator.IN:
             return f"{field}=.({self._joined_values()})"
-        if op is Operator.NOT_IN:
-            return f"{field}!=.({self._joined_values()})"
-        if op is Operator.IS_NULL:
-            return f"{field}={_NULL_TOKEN}"
-        return f"{field}!{_NULL_TOKEN}"
+        return f"{field}!.({self._joined_values()})"
 
     def _joined_values(self) -> str:
         values = self.value if isinstance(self.value, (list, tuple, set)) else [self.value]
@@ -217,16 +241,22 @@ class Logic(str, Enum):
 
 
 def render_filters(
-    filters: Iterable[Filter | str] | None,
+    filters: Iterable[Filter | str | Sequence[Filter | str]] | None,
     *,
     directory: MetricDirectory | None = None,
     logic: Logic = Logic.AND,
 ) -> str:
     """Собрать параметр ``filters`` из списка условий.
 
-    Готовые строки (уже в синтаксисе Метрики) проходят как есть — это нужно,
-    чтобы продвинутые вызывающие могли добавить скобочную группу. Пусто —
-    пустая строка.
+    Args:
+        filters: условия. Вложенный список/кортеж — скобочная группа с тем же
+            ``logic`` внутри: ``[a, [b, c]]`` при AND даёт ``a AND (b AND c)``.
+            Готовые строки (уже в синтаксисе Метрики) проходят как есть —
+            продвинутый путь для конструкций, которых нет в DSL.
+        directory: словарь для перевода человеческих имён полей.
+        logic: соединитель между условиями верхнего уровня.
+
+    Ограничения Метрики: до 20 фильтров, длина строки до 10 000 символов.
     """
 
     if not filters:
@@ -239,9 +269,13 @@ def render_filters(
                 parts.append(text)
         elif isinstance(item, Filter):
             parts.append(item.render(directory))
+        elif isinstance(item, (list, tuple)):
+            group = render_filters(item, directory=directory, logic=logic)
+            if group:
+                parts.append(group if _is_group(group) else f"({group})")
         else:
             raise ValidationError(
-                "Фильтр должен быть Filter или строкой.",
+                "Фильтр должен быть Filter, строкой или списком.",
                 details={"type": type(item).__name__},
             )
     if not parts:
@@ -249,7 +283,24 @@ def render_filters(
     if len(parts) == 1:
         return parts[0]
     joiner = f" {logic.value} "
-    return joiner.join(parts)
+    joined = joiner.join(parts)
+    if len(parts) > 20:
+        raise ValidationError(
+            "В фильтре не больше 20 условий.",
+            details={"count": len(parts)},
+        )
+    if len(joined) > 10_000:
+        raise ValidationError(
+            "Строка фильтра длиннее 10 000 символов.",
+            details={"length": len(joined)},
+        )
+    return joined
+
+
+def _is_group(text: str) -> bool:
+    """Уже готовая скобочная группа: ``(a OR b) AND c`` не оборачиваем второй раз."""
+
+    return text.startswith("(") and text.endswith(")")
 
 
 def _number(value: object, *, field: str) -> str:
@@ -299,7 +350,12 @@ def _from_mapping(mapping: dict[str, object]) -> Filter:
             "Фильтру нужны field и operator.",
             details={"keys": sorted(mapping)},
         )
-    return Filter(field=str(field), operator=Operator.parse(operator), value=mapping.get("value"))
+    return Filter(
+        field=str(field),
+        operator=Operator.parse(operator),
+        value=mapping.get("value"),
+        negate=bool(mapping.get("negate", False)),
+    )
 
 
 __all__ = [

@@ -1,40 +1,56 @@
 """Управление целями счётчика (Management API v1).
 
-Методы API:
+Методы API (проверено по официальной документации ``management/openapi``):
 
-* ``GET    /management/v1/counter/{counterId}/goals`` — список;
+* ``GET    /management/v1/counter/{counterId}/goals`` — список
+  (ответ ``{"goals": [...]}``, старый ``{"items": [...]}`` тоже поддерживается);
+* ``GET    /management/v1/counter/{counterId}/goal/{goalId}`` — одна цель
+  (ответ ``{"goal": {...}}``);
 * ``POST   /management/v1/counter/{counterId}/goals`` — создание (тело ``{"goal": {...}}``);
-* ``PUT    /management/v1/counter/{counterId}/goals`` — изменение (цель с ``id``);
-* ``DELETE /management/v1/counter/{counterId}/goals`` — удаление (цель с ``id``).
+* ``PUT    /management/v1/counter/{counterId}/goal/{goalId}`` — изменение;
+* ``DELETE /management/v1/counter/{counterId}/goal/{goalId}`` — удаление
+  (ответ ``{"success": true}``).
 
 Агенту важно не создавать повторы: ``ensure_goal`` сначала ищет такую же цель
-по названию и существенным параметрам и возвращает найденную, помечая
-``created=False``.
+по существенным параметрам (тип + условия + шаги + глубина + длительность,
+название не учитывается) и возвращает найденную, помечая ``created=False``.
+Совпадение только по названию дубликатом не считается: такое цель-имя может
+относиться к другому условию — создание выполняется, а в результат попадает
+предупреждение.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import builtins
+from dataclasses import dataclass, field
 from typing import Any
 
 from yandex_metrika_agent.client import MetrikaClient
-from yandex_metrika_agent.errors import ValidationError
+from yandex_metrika_agent.errors import NotFoundError, ValidationError
 from yandex_metrika_agent.log import get_logger
-from yandex_metrika_agent.models import Goal, GoalCondition, GoalStep
-
-#: Поля списка целей, которые стоит запросить у API.
-GOAL_FIELDS = "id,name,type,default_price,goal_source,is_favorite,status,conditions,steps,depth,duration,hide_phone_number"
+from yandex_metrika_agent.models import Goal, GoalCondition
 
 _LOGGER = get_logger("goals")
 
 
-def _counter_path(counter_id: int) -> str:
-    if not isinstance(counter_id, int) or counter_id <= 0:
+def _validate_id(value: int, name: str) -> int:
+    if not isinstance(value, int) or value <= 0:
         raise ValidationError(
-            "counter_id должен быть положительным целым числом.",
-            details={"counter_id": counter_id},
+            f"{name} должен быть положительным целым числом.",
+            details={name: value},
         )
+    return value
+
+
+def _counter_path(counter_id: int) -> str:
+    _validate_id(counter_id, "counter_id")
     return f"/management/v1/counter/{counter_id}/goals"
+
+
+def _goal_path(counter_id: int, goal_id: int) -> str:
+    _validate_id(counter_id, "counter_id")
+    _validate_id(goal_id, "goal_id")
+    return f"/management/v1/counter/{counter_id}/goal/{goal_id}"
 
 
 def _unwrap_list(payload: Any, *keys: str) -> list[dict[str, Any]]:
@@ -68,6 +84,7 @@ class GoalResult:
     goal: Goal
     created: bool
     reason: str | None = None
+    warnings: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         """Словарь для JSON-вывода CLI и ответов агенту."""
@@ -75,6 +92,7 @@ class GoalResult:
         return {
             "created": self.created,
             "reason": self.reason,
+            "warnings": self.warnings,
             "goal": self.goal.model_dump(exclude_none=True),
             "description": self.goal.describe(),
         }
@@ -94,7 +112,7 @@ class GoalService:
 
     # --- Чтение --------------------------------------------------------------
 
-    async def list(self, counter_id: int, *, fields: str = GOAL_FIELDS) -> list[Goal]:
+    async def list(self, counter_id: int, *, fields: str | None = None) -> builtins.list[Goal]:
         """Список целей счётчика."""
 
         payload = await self.client.get_json(
@@ -106,19 +124,16 @@ class GoalService:
         return goals
 
     async def get(self, counter_id: int, goal_id: int) -> Goal:
-        """Цель по идентификатору (через список — отдельного метода API нет)."""
+        """Цель по идентификатору (``GET .../goal/{goalId}``)."""
 
-        if goal_id <= 0:
-            raise ValidationError("goal_id должен быть положительным.", details={"goal_id": goal_id})
-        for goal in await self.list(counter_id):
-            if goal.id == goal_id:
-                return goal
-        from yandex_metrika_agent.errors import NotFoundError
-
-        raise NotFoundError(
-            f"Цель {goal_id} не найдена на счётчике {counter_id}.",
-            details={"counter_id": counter_id, "goal_id": goal_id},
-        )
+        payload = await self.client.get_json(_goal_path(counter_id, goal_id))
+        data = _unwrap_goal(payload)
+        if not data:
+            raise NotFoundError(
+                f"Цель {goal_id} не найдена на счётчике {counter_id}.",
+                details={"counter_id": counter_id, "goal_id": goal_id},
+            )
+        return Goal.model_validate(data)
 
     # --- Запись --------------------------------------------------------------
 
@@ -134,43 +149,42 @@ class GoalService:
         return created if created.id is not None else goal.model_copy(update={"id": None})
 
     async def update(self, counter_id: int, goal: Goal) -> Goal:
-        """Изменить цель (обязателен ``id``)."""
+        """Изменить цель (``PUT .../goal/{goalId}``, обязателен ``id``)."""
 
         if goal.id is None:
             raise ValidationError(
                 "Для изменения цели нужен id.",
                 details={"name": goal.name},
             )
-        request = goal.to_request()
-        request["id"] = goal.id
-        payload = await self.client.put_json(_counter_path(counter_id), {"goal": request})
+        payload = await self.client.put_json(
+            _goal_path(counter_id, goal.id),
+            {"goal": goal.to_request()},
+        )
         updated = _unwrap_goal(payload)
         return Goal.model_validate(updated) if updated else goal
 
-    async def delete(self, counter_id: int, goal_id: int) -> None:
-        """Удалить цель."""
+    async def delete(self, counter_id: int, goal_id: int) -> dict[str, Any]:
+        """Удалить цель (``DELETE .../goal/{goalId}``)."""
 
-        if goal_id <= 0:
-            raise ValidationError("goal_id должен быть положительным.", details={"goal_id": goal_id})
-        await self.client.delete_json(
-            _counter_path(counter_id),
-            params={"goalId": goal_id},
-        )
+        payload = await self.client.delete_json(_goal_path(counter_id, goal_id))
         _LOGGER.info("Удалена цель %s (счётчик %s)", goal_id, counter_id)
+        return payload if isinstance(payload, dict) else {}
 
     async def ensure_goal(self, counter_id: int, goal: Goal) -> GoalResult:
         """Создать цель, если такой ещё нет (идемпотентность).
 
         Возвращает найденную цель с ``created=False``, если она уже есть:
-        агент может безопасно повторять запрос после сбоя.
+        агент может безопасно повторять запрос после сбоя. Совпадение только
+        по названию дубликатом не считается — создание выполняется, но в
+        ``GoalResult.warnings`` попадает предупреждение о похожем имени.
         """
 
         if not self.check_duplicates:
             return GoalResult(goal=await self.create(counter_id, goal), created=True)
 
-        duplicates = await self.find_similar(counter_id, goal)
-        if duplicates:
-            existing = duplicates[0]
+        exact, by_name = await self.find_duplicates(counter_id, goal)
+        if exact:
+            existing = exact[0]
             _LOGGER.info(
                 "Цель уже существует: id=%s name=%s",
                 existing.id,
@@ -184,30 +198,50 @@ class GoalService:
                     f"{existing.describe()}. Создание пропущено."
                 ),
             )
-        return GoalResult(goal=await self.create(counter_id, goal), created=True)
+        warnings: list[str] = []
+        if by_name:
+            other = by_name[0]
+            warnings.append(
+                f"На счётчике есть цель с таким же названием {other.title!r} "
+                f"(id={other.id}), но другие условия — создана новая цель."
+            )
+        return GoalResult(
+            goal=await self.create(counter_id, goal),
+            created=True,
+            warnings=warnings,
+        )
 
-    async def find_similar(self, counter_id: int, goal: Goal) -> list[Goal]:
-        """Найти цели-дубликаты.
+    async def find_duplicates(
+        self, counter_id: int, goal: Goal
+    ) -> tuple[builtins.list[Goal], builtins.list[Goal]]:
+        """Разделить цели на полные дубликаты и совпадения только по имени.
 
-        Совпадением считаем: одинаковый тип и одинаковые существенные параметры
-        (условия/глубина/длительность/шаги) либо совпадающее название.
-        Название сравнивается нечувствительно к регистру и пробелам — агенты
-        часто пишут его по-разному.
+        Полным совпадением считаем одинаковый тип и существенные параметры
+        (условия/глубина/длительность/шаги). Название сравнивается
+        нечувствительно к регистру и пробелам, но само по себе дубликатом
+        не считается.
         """
 
         wanted = goal.signature()
         wanted_name = _normalize_name(goal.name)
-        found: list[Goal] = []
+        exact: builtins.list[Goal] = []
+        by_name: builtins.list[Goal] = []
         for existing in await self.list(counter_id):
             try:
                 existing_signature = existing.signature()
             except ValueError:  # цель с необычными полями — сравниваем только имя
                 existing_signature = ()
             if existing_signature and existing_signature == wanted:
-                found.append(existing)
+                exact.append(existing)
             elif _normalize_name(existing.name) == wanted_name:
-                found.append(existing)
-        return found
+                by_name.append(existing)
+        return exact, by_name
+
+    async def find_similar(self, counter_id: int, goal: Goal) -> builtins.list[Goal]:
+        """Полные дубликаты цели (историческое имя метода)."""
+
+        exact, _ = await self.find_duplicates(counter_id, goal)
+        return exact
 
     # --- Высокоуровневые конструкторы ---------------------------------------
 
@@ -253,7 +287,9 @@ class GoalService:
     ) -> GoalResult:
         """Цель «Клик по номеру телефона»."""
 
-        return await self.ensure_goal(counter_id, phone_goal(name=name, phone=phone, hide_number=hide_number))
+        return await self.ensure_goal(
+            counter_id, phone_goal(name=name, phone=phone, hide_number=hide_number)
+        )
 
     async def create_email_goal(self, counter_id: int, *, name: str, email: str) -> GoalResult:
         """Цель «Клик по email»."""
@@ -263,12 +299,21 @@ class GoalService:
     async def create_file_goal(self, counter_id: int, *, name: str, filename: str) -> GoalResult:
         """Цель «Скачивание файлов»."""
 
-        return await self.ensure_goal(counter_id, file_goal(name=name, filename=filename))
+        return await self.ensure_goal(
+            counter_id, file_goal(name=name, filename=filename)
+        )
 
-    async def create_messenger_goal(self, counter_id: int, *, name: str, platform: str) -> GoalResult:
+    async def create_messenger_goal(
+        self, counter_id: int, *, name: str, platform: str
+    ) -> GoalResult:
         """Цель «Переход в мессенджер» (whatsapp, telegram, viber, ...)."""
 
         return await self.ensure_goal(counter_id, messenger_goal(name=name, platform=platform))
+
+    async def create_chat_goal(self, counter_id: int, *, name: str, platform: str) -> GoalResult:
+        """Цель «Переход в чат» (типы ``chat`` и ``messenger`` в API)."""
+
+        return await self.ensure_goal(counter_id, chat_goal(name=name, platform=platform))
 
     async def create_search_goal(self, counter_id: int, *, name: str, param: str) -> GoalResult:
         """Цель «Поиск по сайту»: параметр запроса, куда попадает фраза поиска."""
@@ -306,12 +351,14 @@ class GoalService:
         counter_id: int,
         *,
         name: str,
-        steps: list[Goal],
+        steps: builtins.list[Goal],
         price: float | None = None,
     ) -> GoalResult:
         """Составная цель. Шаги должны быть в том же запросе созданы заранее."""
 
-        return await self.ensure_goal(counter_id, composite_goal(name=name, steps=steps, price=price))
+        return await self.ensure_goal(
+            counter_id, composite_goal(name=name, steps=steps, price=price)
+        )
 
 
 def _normalize_name(name: str) -> str:
@@ -428,6 +475,18 @@ def social_goal(*, name: str, network: str) -> Goal:
     )
 
 
+def chat_goal(*, name: str, platform: str) -> Goal:
+    """Цель «Переход в чат»: официальная схема — условие ``chat_platform``."""
+
+    if not platform or not platform.strip():
+        raise ValidationError("Не задана платформа чата (platform).")
+    return Goal(
+        name=name,
+        type="chat",
+        conditions=[GoalCondition(field="chat_platform", platform=platform.strip().lower())],
+    )
+
+
 def depth_goal(*, name: str, depth: int, price: float | None = None) -> Goal:
     """Цель «Количество просмотров»."""
 
@@ -460,18 +519,17 @@ def composite_goal(*, name: str, steps: list[Goal], price: float | None = None) 
             "Шаги составной цели должны быть созданы заранее (нет id).",
             details={"steps": missing},
         )
-    payload = [
-        {"id": step.id, "name": step.name, "type": step.type}
-        for step in steps
-    ]
-    return Goal.model_validate({"name": name, "type": "step", "steps": payload, "default_price": price})
+    payload = [{"id": step.id, "name": step.name, "type": step.type} for step in steps]
+    return Goal.model_validate(
+        {"name": name, "type": "step", "steps": payload, "default_price": price}
+    )
 
 
 __all__ = [
-    "GOAL_FIELDS",
     "GoalResult",
     "GoalService",
     "action_goal",
+    "chat_goal",
     "composite_goal",
     "depth_goal",
     "email_goal",

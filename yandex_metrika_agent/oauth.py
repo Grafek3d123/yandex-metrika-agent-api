@@ -38,7 +38,7 @@ from typing import Any
 
 import httpx
 
-from yandex_metrika_agent.errors import AuthError, ValidationError
+from yandex_metrika_agent.errors import AuthError, ScopeError, ValidationError
 from yandex_metrika_agent.log import anonymize_headers, anonymize_query, get_logger
 from yandex_metrika_agent.tokens import TokenRecord
 
@@ -105,6 +105,19 @@ def new_state() -> str:
     return secrets.token_urlsafe(24)
 
 
+def new_code_verifier() -> str:
+    """PKCE code_verifier (RFC 7636: 43..128 символов)."""
+
+    return secrets.token_urlsafe(48)[:128]
+
+
+def pkce_challenge(verifier: str) -> str:
+    """code_challenge для метода S256: base64url(SHA-256(verifier)) без padding."""
+
+    digest = hashlib.sha256(verifier.encode("ascii")).digest()
+    return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+
+
 def new_device_id(prefix: str = "metrika-agent") -> str:
     """Идентификатор устройства для device-потока (6..50 печатных ASCII)."""
 
@@ -118,6 +131,8 @@ def build_authorize_url(
     scopes: Sequence[str] = METRIKA_ALL_SCOPES,
     state: str | None = None,
     response_type: str = "code",
+    code_challenge: str | None = None,
+    code_challenge_method: str = "S256",
 ) -> str:
     """Собрать URL страницы подтверждения доступа."""
 
@@ -130,6 +145,9 @@ def build_authorize_url(
         params["scope"] = " ".join(scopes)
     if state:
         params["state"] = state
+    if code_challenge:
+        params["code_challenge"] = code_challenge
+        params["code_challenge_method"] = code_challenge_method
     return f"{AUTHORIZE_URL}?{urllib.parse.urlencode(params)}"
 
 
@@ -221,6 +239,7 @@ class OAuthClient:
         redirect_uri: str,
         scopes: Sequence[str] = METRIKA_ALL_SCOPES,
         state: str | None = None,
+        code_challenge: str | None = None,
     ) -> str:
         """URL авторизации для открытия в браузере."""
 
@@ -229,6 +248,7 @@ class OAuthClient:
             redirect_uri=redirect_uri,
             scopes=scopes,
             state=state,
+            code_challenge=code_challenge,
         )
 
     def verification_code_url(
@@ -257,13 +277,23 @@ class OAuthClient:
         code: str,
         *,
         redirect_uri: str = "",
+        code_verifier: str = "",
         connection_id: str = "default",
     ) -> TokenRecord:
-        """Обменять authorization code на токены."""
+        """Обменять authorization code на токены.
+
+        Args:
+            code: код подтверждения из callback/verification_code.
+            redirect_uri: тот же адрес, что и в запросе кода.
+            code_verifier: PKCE-верификатор, если код запрашивался с
+                ``code_challenge`` (browser-поток).
+        """
 
         data: dict[str, str] = {"grant_type": "authorization_code", "code": code}
         if redirect_uri:
             data["redirect_uri"] = redirect_uri
+        if code_verifier:
+            data["code_verifier"] = code_verifier
         return self._record(await self._token_request(data), connection_id=connection_id)
 
     async def request_device_code(
@@ -320,7 +350,9 @@ class OAuthClient:
         if not refresh_token:
             raise AuthError("Нет refresh-токена для продления доступа.")
         return self._record(
-            await self._token_request({"grant_type": "refresh_token", "refresh_token": refresh_token}),
+            await self._token_request(
+                {"grant_type": "refresh_token", "refresh_token": refresh_token}
+            ),
             connection_id=connection_id,
         )
 
@@ -402,11 +434,15 @@ class OAuthClient:
         pending_is_error: bool = False,
     ) -> dict[str, Any]:
         client = await self._client()
-        auth = self._basic_auth() if basic_auth else None
+        basic = self._basic_auth() if basic_auth else None
         body = {key: value for key, value in data.items() if value}
         safe = anonymize_query(body)
         try:
-            response = await client.post(url, data=body, auth=auth)
+            response = (
+                await client.post(url, data=body, auth=basic)
+                if basic is not None
+                else await client.post(url, data=body)
+            )
         except httpx.HTTPError as exc:
             raise AuthError(
                 f"{context}: запрос к Яндекс OAuth не выполнен ({type(exc).__name__}).",
@@ -437,13 +473,16 @@ class OAuthClient:
                     "headers": anonymize_headers(dict(response.headers)),
                 },
             )
-        return payload
+        result: dict[str, Any] = payload
+        return result
 
     def _record(self, payload: dict[str, Any], *, connection_id: str) -> TokenRecord:
         """Собрать :class:`TokenRecord` из ответа Яндекс OAuth."""
 
         expires_in = payload.get("expires_in")
-        expires_at = time.time() + float(expires_in) if isinstance(expires_in, (int, float)) else None
+        expires_at = (
+            time.time() + float(expires_in) if isinstance(expires_in, (int, float)) else None
+        )
         scopes_raw = payload.get("scope")
         scopes = tuple(str(scopes_raw).split()) if isinstance(scopes_raw, str) else ()
         refresh_token = payload.get("refresh_token")
@@ -481,7 +520,7 @@ class LoopbackCallback:
         outer = self
 
         class Handler(BaseHTTPRequestHandler):
-            def do_GET(self) -> None:  # noqa: N802 - сигнатура http.server
+            def do_GET(self) -> None:
                 if urllib.parse.urlsplit(self.path).path != outer.path:
                     self.send_error(404)
                     return
@@ -499,14 +538,15 @@ class LoopbackCallback:
                 body = (
                     "<!doctype html><meta charset=utf-8>"
                     f"<title>{title}</title><h1>{title}</h1><p>{text}</p>"
-                ).encode("utf-8")
+                ).encode()
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
 
-            def log_message(self, *args: Any) -> None:  # журнал ведёт наш логгер
+            def log_message(self, format: str, *args: Any) -> None:
+                # Журнал callback-запросов ведёт наш логгер; стандартный вывод не нужен.
                 return
 
         self._server = ThreadingHTTPServer(("127.0.0.1", self.port), Handler)
@@ -598,6 +638,7 @@ class OAuthFlow:
             else record
         )
         self.store.save(saved)
+        self._ensure_scopes(saved)
         _LOGGER.info(
             "Авторизация завершена: connection=%s scopes=%s",
             saved.connection_id,
@@ -605,18 +646,44 @@ class OAuthFlow:
         )
         return saved
 
+    @staticmethod
+    def _ensure_scopes(record: TokenRecord) -> None:
+        """Проверить, что выданный токен годится для Метрики.
+
+        Яндекс возвращает фактические права в ответе token; если прав меньше
+        запрошенного (неверный скоуп у клиента, пользователь снял галочку) —
+        падаем сразу, а не на первом запросе к API.
+        """
+
+        if record.scopes and METRIKA_READ not in record.scopes:
+            raise ScopeError(
+                "Токен выдан без права metrika:read — переавторизуйте подключение.",
+                details={"scopes": list(record.scopes), "required": METRIKA_READ},
+            )
+
     async def _connect_browser(self, connection_id: str, timeout: float) -> TokenRecord:
         state = new_state()
+        verifier = new_code_verifier()
         callback = LoopbackCallback(self.redirect_uri, expected_state=state)
         callback.start()
-        url = self.client.authorize_url(redirect_uri=self.redirect_uri, scopes=self.scopes, state=state)
+        url = self.client.authorize_url(
+            redirect_uri=self.redirect_uri,
+            scopes=self.scopes,
+            state=state,
+            code_challenge=pkce_challenge(verifier),
+        )
         _LOGGER.info("Откройте в браузере: %s", url)
         try:
             opened = self.open_browser(url)
             if asyncio.iscoroutine(opened):
                 await opened
             code = await asyncio.to_thread(callback.wait, timeout)
-            return await self.client.exchange_code(code, redirect_uri=self.redirect_uri)
+            return await self.client.exchange_code(
+                code,
+                redirect_uri=self.redirect_uri,
+                code_verifier=verifier,
+                connection_id=connection_id,
+            )
         finally:
             callback.stop()
 
@@ -672,6 +739,59 @@ class OAuthFlow:
             expires_at=updated.expires_at,
             scopes=updated.scopes or record.scopes,
         )
+
+    async def complete_token(
+        self,
+        connection_id: str = "default",
+        *,
+        method: str = "browser",
+        timeout: float = DEFAULT_BROWSER_TIMEOUT,
+    ) -> TokenRecord:
+        """Вернуть запись подключения с действующими токенами.
+
+        Если токен уже сохранён — используется он; если его нет — выполняется
+        авторизация. Вызывающий (агент, сервис) не занимается продлением:
+        это делает ``get_access_token``.
+        """
+
+        record = self.store.get(connection_id)
+        if record is not None:
+            saved: TokenRecord = record
+            return saved
+        return await self.connect(connection_id, method=method, timeout=timeout)
+
+    async def get_access_token(
+        self,
+        connection_id: str = "default",
+        *,
+        method: str = "browser",
+        timeout: float = DEFAULT_BROWSER_TIMEOUT,
+    ) -> str:
+        """Действующий access-токен подключения.
+
+        Сервис сам продлевает истёкший доступ по refresh-токену (или
+        авторизует заново, если подключения нет), поэтому сторона,
+        пользующаяся токеном, не должна знать про refresh-токен и сроки.
+        """
+
+        await self.complete_token(connection_id, method=method, timeout=timeout)
+        get_valid = getattr(self.store, "get_valid", None)
+        if get_valid is not None:
+            valid = get_valid(connection_id, self.refresh)
+            if asyncio.iscoroutine(valid):
+                valid = await valid
+            return str(valid.access_token)
+        record = self.store.get(connection_id)
+        if record is None:
+            raise AuthError(
+                f"Подключение {connection_id!r} не авторизовано.",
+                details={"connection_id": connection_id},
+            )
+        if record.is_expired():
+            saved = await self.refresh(record)
+            self.store.save(saved)
+            return str(saved.access_token)
+        return str(record.access_token)
 
     async def disconnect(self, connection_id: str = "default", *, revoke: bool = True) -> bool:
         """Удалить подключение и (по возможности) отозвать токен у Яндекса."""

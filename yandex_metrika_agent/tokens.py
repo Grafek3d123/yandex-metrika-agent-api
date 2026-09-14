@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import stat
@@ -42,7 +43,7 @@ class TokenRecord:
 
     access_token: str = field(repr=False)
     refresh_token: str | None = field(default=None, repr=False)
-    token_type: str = "bearer"
+    token_type: str = "bearer"  # noqa: S105  - это OAuth token_type, не пароль
     expires_at: float | None = None
     scopes: tuple[str, ...] = ()
     connection_id: str = "default"
@@ -218,10 +219,11 @@ class EncryptedFileStore:
 
         if not self.directory.exists():
             return []
+        # Обратная карта: fingerprint(connection_id) -> connection_id.
+        fingerprints = {crypto.fingerprint(cid): cid for cid in self._cache}
         found: list[str] = []
         for path in sorted(self.directory.glob("*.token")):
-            record = self._cache.get(path.stem)
-            found.append(record.connection_id if record else path.stem)
+            found.append(fingerprints.get(path.stem, path.stem))
         return found
 
     # --- Автоматическое продление -------------------------------------------
@@ -323,6 +325,45 @@ def crypto_env_key() -> bytes:
     return key
 
 
+def default_store(
+    directory: Path | str | None = None, key: bytes | None = None
+) -> EncryptedFileStore:
+    """Хранилище по умолчанию: каталог и ключ из настроек пакета."""
+
+    from yandex_metrika_agent.config import token_dir
+
+    return EncryptedFileStore(Path(directory) if directory is not None else token_dir(), key=key)
+
+
+def save_token(
+    record: TokenRecord,
+    *,
+    store: TokenStore | None = None,
+    directory: Path | str | None = None,
+) -> None:
+    """Сохранить токен в хранилище.
+
+    Args:
+        record: запись с токенами.
+        store: готовое хранилище; по умолчанию — зашифрованные файлы в
+            каталоге настроек.
+        directory: явный каталог хранилища (удобно в тестах).
+    """
+
+    (store or default_store(directory)).save(record)
+
+
+def get_token(
+    connection_id: str = "default",
+    *,
+    store: TokenStore | None = None,
+    directory: Path | str | None = None,
+) -> TokenRecord | None:
+    """Прочитать токен подключения (``None`` — подключения нет)."""
+
+    return (store or default_store(directory)).get(connection_id)
+
+
 def _atomic_write(path: Path, payload: bytes) -> None:
     """Запись через временный файл + rename, права 0600 где это возможно."""
 
@@ -333,10 +374,9 @@ def _atomic_write(path: Path, payload: bytes) -> None:
             stream.write(payload)
             stream.flush()
             os.fsync(stream.fileno())
-        try:
+        # Windows может не поддержать chmod — молча пропускаем.
+        with contextlib.suppress(OSError):
             os.chmod(tmp_path, stat.S_IRUSR | stat.S_IWUSR)
-        except OSError:  # pragma: no cover - Windows может не поддержать
-            pass
         os.replace(tmp_path, path)
     except OSError as exc:
         tmp_path.unlink(missing_ok=True)
@@ -352,4 +392,7 @@ __all__ = [
     "TokenRecord",
     "TokenStore",
     "crypto_env_key",
+    "default_store",
+    "get_token",
+    "save_token",
 ]

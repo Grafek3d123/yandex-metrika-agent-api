@@ -10,10 +10,10 @@ import hmac
 import os
 import secrets
 
-from yandex_metrika_agent.errors import TokenStorageError
-
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+from yandex_metrika_agent.errors import TokenStorageError
 
 NONCE_SIZE = 12
 KEY_SIZE = 32

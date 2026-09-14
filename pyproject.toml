@@ -52,12 +52,20 @@ select = [
 ignore = [
     "ANN401",  # allow Any where httpx/json payloads need it
     "S101",    # assert is fine in tests
+    # Кириллица в докстрингах и строках — намеренная (проект русскоязычный).
+    "RUF001",
+    "RUF002",
+    "RUF003",
+    # str+Enum оставлен намеренно: код опирается на `.value` и `member is X`,
+    # а StrEnum меняет str(member) и ломает итерацию по типу в mypy/pyright.
+    "UP042",
 ]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S105", "S106", "ANN001", "ANN201", "PLR2004"]
 # BaseException — контракт CLI: именно его перехватывает main(), сужать нельзя.
-"yandex_metrika_agent/__main__.py" = ["BLE001"]
+# print — интерфейс CLI: вывод JSON в stdout/stderr делает именно он.
+"yandex_metrika_agent/__main__.py" = ["BLE001", "T201"]
 # typing.* импортируются без кавычек: они нужны в рантайме для pydantic и TypeAdapter.
 "yandex_metrika_agent/models/*.py" = ["TC003"]
 
@@ -82,9 +90,9 @@ disallow_untyped_defs = false
 disallow_incomplete_defs = false
 check_untyped_defs = true
 
-# Внешние библиотеки без type stubs.
+# Внешние библиотеки без type stubs. dotenv — опциональная зависимость.
 [[tool.mypy.overrides]]
-module = ["respx.*", "pytest.*"]
+module = ["respx.*", "pytest.*", "dotenv.*"]
 ignore_missing_imports = true
 
 [tool.ruff.format]

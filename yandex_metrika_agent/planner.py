@@ -20,17 +20,19 @@ from typing import Any
 from yandex_metrika_agent.errors import ValidationError
 from yandex_metrika_agent.goals import (
     action_goal,
+    chat_goal,
     depth_goal,
     email_goal,
     file_goal,
     messenger_goal,
+    payment_system_goal,
     phone_goal,
     search_goal,
     social_goal,
     url_goal,
     visit_duration_goal,
 )
-from yandex_metrika_agent.models import Goal, GOAL_TYPES
+from yandex_metrika_agent.models import GOAL_TYPES, Goal
 
 
 class PlanStatus(str, Enum):
@@ -43,13 +45,14 @@ class PlanStatus(str, Enum):
 
 #: Типы целей, для которых нужно одно значение-условие.
 _VALUE_FIELDS: dict[str, tuple[str, str]] = {
-    # type: (имя поля, вопрос пользователю)
+    # Ключ: тип цели. Значение: (имя поля, вопрос пользователю).
     "action": ("event", "Какое JavaScript-событие отправляет сайт (reachGoal('<имя>'))?"),
     "url": ("url", "На какой URL должна срабатывать цель (например, /thank-you)?"),
     "phone": ("phone", "Какой номер телефона считается целью (в формате +7...)?"),
     "email": ("email", "Какой email-адрес считается целью?"),
     "file": ("filename", "Файл какого имени/расширения нужно считать целью (например, .pdf)?"),
     "messenger": ("platform", "В какой мессенджер переход (whatsapp, telegram, viber)?"),
+    "chat": ("platform", "В какой чат переход (whatsapp, telegram, jivo, ...)?"),
     "search": ("param", "Как называется GET-параметр поиска на сайте?"),
     "social": ("network", "В какую соцсеть переход (vk, facebook, twitter)?"),
 }
@@ -62,6 +65,7 @@ _NUMBER_FIELDS: dict[str, tuple[str, str, int]] = {
 
 #: Ключевые слова -> тип цели (порядок важен: более специфичные раньше).
 _KEYWORDS: list[tuple[str, tuple[str, ...]]] = [
+    ("chat", ("чат", "chat", "консультант", "jivo", "calltouch", "онлайн-консу")),
     ("messenger", ("whatsapp", "telegram", "viber", "мессендж", "вайбер", "телеграм")),
     ("social", ("соцсет", "вконтакт", "facebook", "twitter", "vk")),
     ("payment_system", ("платёжн", "платежн", "эквайринг", "оплата")),
@@ -160,8 +164,14 @@ class GoalPlanner:
                 status=PlanStatus.UNKNOWN,
                 name=goal_name,
                 params=params,
-                reason="Не удалось определить тип цели по описанию — уточните, что должно считаться достижением.",
-                question="Что должно считаться достижением цели: событие на странице, визит по URL, клик по телефону/ссылке или что-то ещё?",
+                reason=(
+                    "Не удалось определить тип цели по описанию — "
+                    "уточните, что должно считаться достижением."
+                ),
+                question=(
+                    "Что должно считаться достижением цели: событие на странице, "
+                    "визит по URL, клик по телефону/ссылке или что-то ещё?"
+                ),
             )
 
         missing: list[str] = []
@@ -226,10 +236,14 @@ class GoalPlanner:
             return file_goal(name=name, filename=str(p["filename"]))
         if goal_type == "messenger":
             return messenger_goal(name=name, platform=str(p["platform"]))
+        if goal_type == "chat":
+            return chat_goal(name=name, platform=str(p["platform"]))
         if goal_type == "search":
             return search_goal(name=name, param=str(p["param"]))
         if goal_type == "social":
             return social_goal(name=name, network=str(p["network"]))
+        if goal_type == "payment_system":
+            return payment_system_goal(name=name)
         if goal_type == "number":
             return depth_goal(name=name, depth=int(p["depth"]))
         if goal_type == "visit_duration":
@@ -258,7 +272,9 @@ class GoalPlanner:
     def _derive_name(self, text: str) -> str:
         """Название из описания: убрать служебные слова «цель на/при»."""
 
-        cleaned = re.sub(r"^(цель|goal)\s*(на|при|для|по)?\s*", "", text.strip(), flags=re.IGNORECASE)
+        cleaned = re.sub(
+            r"^(цель|goal)\s*(на|при|для|по)?\s*", "", text.strip(), flags=re.IGNORECASE
+        )
         cleaned = cleaned.strip(" .,:")
         if not cleaned:
             return text.strip() or "Новая цель"
