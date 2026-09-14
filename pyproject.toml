@@ -12,7 +12,7 @@ dependencies = [
 ]
 
 [project.scripts]
-ymetrika = "yandex_metrika_agent.cli:main"
+ymetrika = "yandex_metrika_agent.__main__:main"
 
 [dependency-groups]
 dev = [
@@ -57,7 +57,7 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S105", "S106", "ANN001", "ANN201", "PLR2004"]
 # BaseException — контракт CLI: именно его перехватывает main(), сужать нельзя.
-"yandex_metrika_agent/cli.py" = ["BLE001"]
+"yandex_metrika_agent/__main__.py" = ["BLE001"]
 # typing.* импортируются без кавычек: они нужны в рантайме для pydantic и TypeAdapter.
 "yandex_metrika_agent/models/*.py" = ["TC003"]
 
