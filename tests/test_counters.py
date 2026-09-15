@@ -155,3 +155,48 @@ async def test_resolve_by_numeric_id(client: object) -> None:
     matched = await service.resolve("44147844")
     assert len(matched) == 1
     assert matched[0].id == 44147844
+
+
+@pytest.mark.asyncio()
+@respx.mock
+async def test_create_counter_posts_wrapped_body(client: object) -> None:
+    route = respx.post(COUNTERS_URL).mock(
+        return_value=httpx.Response(200, json={"counter": RAW_COUNTER})
+    )
+    service = CounterService(client)  # type: ignore[arg-type]
+    created = await service.create(name="Тестовый", site="example.com")
+    assert created.id == 44147844
+    request = route.calls.last.request
+    assert b'"counter"' in request.content
+    assert b'"name"' in request.content
+    assert b'"site"' in request.content
+
+
+@pytest.mark.asyncio()
+@respx.mock
+async def test_create_counter_validates_input(client: object) -> None:
+    service = CounterService(client)  # type: ignore[arg-type]
+    with pytest.raises(ValidationError):
+        await service.create(name="  ", site="example.com")
+    with pytest.raises(ValidationError):
+        await service.create(name="Тест", site=" ")
+
+
+@pytest.mark.asyncio()
+@respx.mock
+async def test_delete_counter_calls_delete_endpoint(client: object) -> None:
+    route = respx.delete("https://api-metrika.yandex.net/management/v1/counter/44147844").mock(
+        return_value=httpx.Response(200, json={"success": True})
+    )
+    service = CounterService(client)  # type: ignore[arg-type]
+    result = await service.delete(44147844)
+    assert result == {"success": True}
+    assert route.called
+
+
+@pytest.mark.asyncio()
+@respx.mock
+async def test_delete_counter_validates_id(client: object) -> None:
+    service = CounterService(client)  # type: ignore[arg-type]
+    with pytest.raises(ValidationError):
+        await service.delete(0)

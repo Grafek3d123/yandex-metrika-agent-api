@@ -50,6 +50,9 @@ METRIC_ALIASES: dict[str, str] = {
     "depth": "ym:s:avgPageViews",
     "avg_pageviews": "ym:s:avgPageViews",
     "pages_per_visit": "ym:s:avgPageViews",
+    # Метрика группы "хиты" (ym:pv:) — просмотры страниц. Используется вместе
+    # с измерением ym:pv:URL (ym:s: и ym:pv: в одном запросе не смешиваются).
+    "pv_pageviews": "ym:pv:pageviews",
 }
 
 #: Человеческий псевдоним измерения -> идентификатор Reports API.
@@ -71,10 +74,11 @@ DIMENSION_ALIASES: dict[str, str] = {
     "os": "ym:s:operatingSystemRoot",
     "operating_system": "ym:s:operatingSystemRoot",
     "language": "ym:s:language",
-    "page": "ym:s:page",
-    "url": "ym:s:page",
-    "landing_page": "ym:s:landingPage",
-    "exit_page": "ym:s:exitPage",
+    # Страница — измерение группы "хиты". ym:s:page/landingPage/exitPage
+    # Reports API отвергает (error 4001), проверено живым запросом.
+    "page": "ym:pv:URL",
+    "url": "ym:pv:URL",
+    "referer": "ym:pv:referer",
 }
 
 #: Обратные словари: идентификатор API -> человекочитаемое имя (для ответов).
@@ -88,6 +92,7 @@ METRIC_TITLES: dict[str, str] = {
     "ym:s:avgVisitDurationSeconds": "Среднее время на сайте",
     "ym:s:newUsers": "Новые посетители",
     "ym:s:avgPageViews": "Глубина просмотра",
+    "ym:pv:pageviews": "Просмотры страниц (хиты)",
 }
 
 DIMENSION_TITLES: dict[str, str] = {
@@ -104,9 +109,8 @@ DIMENSION_TITLES: dict[str, str] = {
     "ym:s:browser": "Браузер",
     "ym:s:operatingSystemRoot": "Операционная система",
     "ym:s:language": "Язык",
-    "ym:s:page": "Страница",
-    "ym:s:landingPage": "Входная страница",
-    "ym:s:exitPage": "Выходная страница",
+    "ym:pv:URL": "Страница",
+    "ym:pv:referer": "Реферер",
 }
 
 #: Максимумы из документации Reports API (``https://.../intro/quotas``).

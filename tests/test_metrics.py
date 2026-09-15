@@ -33,7 +33,7 @@ def test_dimension_alias_to_api() -> None:
     directory = MetricDirectory()
     assert directory.dimension("date") == "ym:s:date"
     assert directory.dimension("traffic_source") == "ym:s:trafficSource"
-    assert directory.dimension("page") == "ym:s:page"
+    assert directory.dimension("page") == "ym:pv:URL"
 
 
 def test_unknown_metric_rejected_with_suggestions() -> None:

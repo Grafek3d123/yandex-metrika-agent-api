@@ -253,7 +253,7 @@ AI-friendly методы (сами выбирают `metrics`/`dimensions`/со�
 | `get_traffic(counter, date_from, date_to)` | сводка: visits, users, pageviews, bounce_rate, session_duration, new_users |
 | `get_traffic_by_day(...)` | динамика по дням |
 | `get_sources(...)` | источники трафика по посещаемости (убыв.) |
-| `get_top_pages(..., landing=False)` | популярные/входные страницы по просмотрам |
+| `get_top_pages(...)` | популярные страницы по просмотрам (`ym:pv:pageviews` × `ym:pv:URL`) |
 | `get_goal_stats(counter, goal_id, by_source=False)` | достижения и конверсия цели |
 | `compare_periods(counter, period_a, period_b, metrics)` | список `ComparisonRow` (current/previous/delta/delta_percent) |
 
@@ -279,11 +279,15 @@ AI-friendly методы (сами выбирают `metrics`/`dimensions`/со�
 | `session_duration` | `ym:s:avgVisitDurationSeconds` |
 | `new_users` | `ym:s:newUsers` |
 | `depth` | `ym:s:avgPageViews` |
+| `pv_pageviews` | `ym:pv:pageviews` |
 
 Измерения: `traffic_source→ym:s:trafficSource`, `search_engine→ym:s:searchEngine`,
 `country/region/city→ym:s:region*`, `device→ym:s:deviceType`, `browser→ym:s:browser`,
-`os→ym:s:operatingSystemRoot`, `page→ym:s:page`, `landing_page→ym:s:landingPage`,
+`os→ym:s:operatingSystemRoot`, `page→ym:pv:URL`, `referer→ym:pv:referer`,
 `date/hour→ym:s:date/hour`.
+
+ym:s: и ym:pv: в одном запросе не смешиваются; `ym:s:page`, `ym:s:landingPage`
+и `ym:s:exitPage` Reports API отвергает (проверено живым запросом).
 
 Метрики цели параметризованы: `goal_reaches(id)` → `ym:s:goal<id>reaches`,
 `goal_conversion(id)` → `ym:s:goal<id>conversionRate`.

@@ -227,18 +227,21 @@ class ReportService:
         date_from: date | datetime | str | None = None,
         date_to: date | datetime | str | None = None,
         limit: int = 10,
-        landing: bool = False,
     ) -> list[dict[str, Any]]:
-        """Популярные (или входные) страницы по просмотрам."""
+        """Популярные страницы по просмотрам.
+
+        Группируется по измерению ``ym:pv:URL`` (полный URL страницы). Входная
+        страница как отдельное измерение в Reports API отсутствует.
+        """
 
         report = await self.get_report(
             ReportCommand(
                 counter_id=counter_id,
-                metrics=["pageviews", "visits"],
-                dimensions=["landing_page" if landing else "page"],
+                metrics=["pv_pageviews"],
+                dimensions=["page"],
                 date1=_coerce_date(date_from),
                 date2=_coerce_date(date_to),
-                sort_by=["-pageviews"],
+                sort_by=["-pv_pageviews"],
                 limit=limit,
             )
         )

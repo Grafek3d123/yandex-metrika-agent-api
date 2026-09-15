@@ -372,12 +372,12 @@ class Goal(_Model):
             payload["duration"] = self.duration
         if self.default_price is not None:
             payload["default_price"] = self.default_price
-        if self.is_favorite is not None:
-            payload["is_favorite"] = self.is_favorite
+        # is_favorite не отправляем: фактический API отвергает поле в PUT/POST
+        # (invalid_json, path: goal.is_favorite), хотя openapi его описывает.
         if self.hide_phone_number is not None:
             payload["hide_phone_number"] = self.hide_phone_number
-        if self.is_retargeting is not None:
-            payload["is_retargeting"] = self.is_retargeting
+        # is_retargeting не отправляем: фактический API отвергает поле в
+        # PUT/POST (invalid_json, path: goal.is_retargeting).
         return payload
 
     def describe(self) -> str:

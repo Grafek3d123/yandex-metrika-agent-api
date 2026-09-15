@@ -6,7 +6,11 @@
   ``{"rows": N, "counters": [CounterBrief, ...]}`` (старый формат
   ``{"content": [{"counter": {...}}]}`` тоже поддерживается);
 * ``GET /management/v1/counter/{counterId}`` — один счётчик, ответ
-  ``{"counter": {...}}``.
+  ``{"counter": {...}}``;
+* ``POST /management/v1/counters`` — создание счётчика (тело
+  ``{"counter": {name, site, timezone?}}``);
+* ``DELETE /management/v1/counter/{counterId}`` — удаление счётчика,
+  ответ ``{"success": true}``.
 
 Поле ``site`` в актуальном API вернулось как объект ``site2: {"site": ...}``;
 сервис понимает оба варианта. Владелец — строка ``owner_login``, права —
@@ -27,7 +31,7 @@ from urllib.parse import urlparse
 from pydantic import BaseModel, ConfigDict
 
 from yandex_metrika_agent.client import MetrikaClient
-from yandex_metrika_agent.errors import NotFoundError, ValidationError
+from yandex_metrika_agent.errors import NotFoundError, TransportError, ValidationError
 from yandex_metrika_agent.log import get_logger
 
 #: Дополнительные объекты, которые можно запросить параметром ``field``
@@ -236,6 +240,57 @@ class CounterService:
                 details={"counter_id": counter_id},
             )
         return MetrikaCounter.from_api(raw[0])
+
+    async def create(
+        self,
+        *,
+        name: str,
+        site: str,
+        timezone: int | None = None,
+    ) -> MetrikaCounter:
+        """Создать счётчик: ``POST /management/v1/counters``.
+
+        Args:
+            name: название счётчика (обязательно, до 255 символов).
+            site: адрес сайта (обязателен; также задаёт основное зеркало).
+            timezone: смещение UTC в секундах (по умолчанию — UTC+0).
+        """
+
+        if not name.strip():
+            raise ValidationError("name счётчика не может быть пустым.")
+        if not site.strip():
+            raise ValidationError("site счётчика не может быть пустым.")
+        body: dict[str, Any] = {
+            "counter": {
+                "name": name.strip(),
+                "site": site.strip(),
+            }
+        }
+        if timezone is not None:
+            body["counter"]["timezone"] = timezone
+        payload = await self.client.post_json("/management/v1/counters", body)
+        raw = _unwrap_counters(payload)
+        if not raw:
+            raise TransportError(
+                "Ответ создания счётчика не содержит объект counter.",
+                details={"keys": sorted(payload) if isinstance(payload, dict) else None},
+            )
+        return MetrikaCounter.from_api(raw[0])
+
+    async def delete(self, counter_id: int) -> dict[str, Any]:
+        """Удалить счётчик: ``DELETE /management/v1/counter/{counterId}``.
+
+        Операция необратима. Ответ API — ``{"success": true}``.
+        """
+
+        if not isinstance(counter_id, int) or counter_id <= 0:
+            raise ValidationError(
+                "counter_id должен быть положительным целым числом.",
+                details={"counter_id": counter_id},
+            )
+        payload = await self.client.delete_json(f"/management/v1/counter/{counter_id}")
+        _LOGGER.info("Удалён счётчик %s", counter_id)
+        return payload if isinstance(payload, dict) else {}
 
     async def resolve(self, query: str) -> builtins.list[MetrikaCounter]:
         """Найти счётчики по названию сайта, домену, URL или идентификатору.

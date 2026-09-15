@@ -26,3 +26,7 @@ data/tokens/
 .idea/
 .vscode/
 .DS_Store
+
+# Acceptance run artifacts (contain live counter/goal ids; no secrets)
+scripts/task03_results.json
+scripts/task03_run.log

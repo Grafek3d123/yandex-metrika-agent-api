@@ -66,6 +66,8 @@ ignore = [
 # BaseException — контракт CLI: именно его перехватывает main(), сужать нельзя.
 # print — интерфейс CLI: вывод JSON в stdout/stderr делает именно он.
 "yandex_metrika_agent/__main__.py" = ["BLE001", "T201"]
+# Скрипты приёмки: print — формат вывода прогонов.
+"scripts/**" = ["T201", "E402"]
 # typing.* импортируются без кавычек: они нужны в рантайме для pydantic и TypeAdapter.
 "yandex_metrika_agent/models/*.py" = ["TC003"]
 
