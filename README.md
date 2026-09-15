@@ -89,7 +89,7 @@ python -m yandex_metrika_agent plan "цель на отправку формы" 
 | `metrika_get_goal` | цель по id |
 | `metrika_create_goal` | создание цели из описания или явного типа (идемпотентно) |
 | `metrika_update_goal` | изменение цели (название, цена) |
-| `metrika_delete_goal` | удаление цели |
+| `metrika_delete_goal` | удаление цели (необратимо; требует подтверждения) |
 | `metrika_get_report` | произвольный отчёт (человеческие имена метрик/измерений) |
 | `metrika_get_traffic` | сводка посещаемости |
 | `metrika_get_traffic_by_day` | динамика по дням |
@@ -104,6 +104,7 @@ python -m yandex_metrika_agent plan "цель на отправку формы" 
 {"status": "ok", "data": {...}}
 {"status": "needs_input", "question": "...", "missing": ["event"]}
 {"status": "error", "error": {"error": "NotFoundError", "message": "...", "details": {}}}
+{"status": "confirmation_required", "confirmation_id": "...", "question": "...", "data": {...}}
 ```
 
 Правило безопасности: если для цели не хватает существенного значения (имя
@@ -111,7 +112,40 @@ JS-события, URL, телефон), инструмент возвращае
 **не выдумывает** значение. Создание цели идемпотентно: повтор не создаёт
 дубликат (совпадение по типу и существенным параметрам).
 
-Ядро независимо от MCP: реестр `Tool(name, description, inputSchema, handler)`
+## Подтверждение разрушающих операций (destructive safety)
+
+Инструменты классифицированы по уровню опасности (`ToolSafety`):
+`READ_ONLY`, `MUTATING` (create/update), `DESTRUCTIVE` (только `metrika_delete_goal`).
+Класс `safety` обязателен у каждого инструмента — незадекларированный инструмент
+не собрать. Guard подтверждения живёт **в реестре ниже уровня handler'а**,
+поэтому новый разрушающий инструмент нельзя случайно реализовать без проверки.
+
+`metrika_delete_goal` **не выполняет DELETE без валидного подтверждения**:
+
+1. Первый вызов возвращает `confirmation_required` с `confirmation_id` и
+   сводкой операции (action, `counter_id`, `goal_id`); API-запрос не уходит.
+2. Доверенный хост после явного согласия пользователя получает одноразовый
+   токен: `tools.approve_confirmation(confirmation_id, approved_by="user")`.
+   Этот метод **не является инструментом** и недоступен из AI Tool Layer.
+3. Повторный вызов с `confirmation_token` выполняет ровно один DELETE.
+
+Токен — HMAC под секретом процесса: агент не может его подделать или передать
+`confirmed=true`. Он привязан к точным параметрам (`connection_id`,
+`counter_id`, `goal_id`, набор аргументов), ограничен по времени (TTL) и
+одноразовый. Чужой/просроченный/повторно использованный токен → `DELETE`
+не выполняется (`confirmation_required` или `error`).
+
+```python
+answer = await tools.call("metrika_delete_goal", {"counter": "example.com", "goal_id": 77})
+# answer["status"] == "confirmation_required"; цель цела
+token = tools.approve_confirmation(answer["confirmation_id"], approved_by="user")
+answer = await tools.call("metrika_delete_goal", {
+    "counter": "example.com", "goal_id": 77,
+    "confirmation_token": token["confirmation_token"],
+})  # answer["status"] == "ok" — выполнен ровно один DELETE
+```
+
+Ядро независимо от MCP: реестр `Tool(name, description, inputSchema, handler, safety)`
 со `specs()`/`call()` можно обернуть в MCP-сервер без переделки логики.
 
 ## Настройка (переменные окружения)

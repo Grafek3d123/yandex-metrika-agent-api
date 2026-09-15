@@ -14,6 +14,7 @@ from yandex_metrika_agent.ai_tools.base import (
     Tool,
     ToolContext,
     ToolResult,
+    ToolSafety,
     strict_object,
 )
 
@@ -53,6 +54,7 @@ TOOLS: list[Tool] = [
         description="Список счётчиков, доступных текущему пользователю Метрики.",
         input_schema=_LIST_SCHEMA,
         handler=_list_counters,
+        safety=ToolSafety.READ_ONLY,
     ),
     Tool(
         name="metrika_get_counter",
@@ -62,6 +64,7 @@ TOOLS: list[Tool] = [
         ),
         input_schema=_GET_SCHEMA,
         handler=_get_counter,
+        safety=ToolSafety.READ_ONLY,
     ),
 ]
 

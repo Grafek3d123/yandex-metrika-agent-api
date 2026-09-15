@@ -1,0 +1,83 @@
+[
+  {
+    "step": "counter_ready",
+    "status": "ok",
+    "elapsed_s": 0.19,
+    "data": {
+      "counter_id": 112680665,
+      "created": false
+    }
+  },
+  {
+    "step": "goal_ready",
+    "status": "ok",
+    "elapsed_s": 0.16,
+    "data": {
+      "goal_id": 621640281,
+      "created": true
+    }
+  },
+  {
+    "step": "delete_without_confirmation",
+    "status": "ok",
+    "elapsed_s": 0.11,
+    "data": {
+      "status": "confirmation_required",
+      "confirmation_id": "E2syox7b_rSRN_WPzdB8oA",
+      "goal_still_exists": true
+    }
+  },
+  {
+    "step": "delete_with_forged_token",
+    "status": "ok",
+    "elapsed_s": 0.09,
+    "data": {
+      "status": "error",
+      "goal_still_exists": true
+    }
+  },
+  {
+    "step": "approve",
+    "status": "ok",
+    "elapsed_s": 0.0,
+    "data": {
+      "confirmation_id": "E2syox7b_rSRN_WPzdB8oA",
+      "token_issued": true
+    }
+  },
+  {
+    "step": "delete_with_valid_confirmation",
+    "status": "ok",
+    "elapsed_s": 0.27,
+    "data": {
+      "status": "ok",
+      "goal_deleted": true
+    }
+  },
+  {
+    "step": "delete_with_reused_token",
+    "status": "ok",
+    "elapsed_s": 0.05,
+    "data": {
+      "status": "error",
+      "reason": "reused"
+    }
+  },
+  {
+    "step": "cleanup_note",
+    "status": "info",
+    "elapsed_s": 0.05,
+    "data": {
+      "test_counter_left": false,
+      "counter_id": null,
+      "note": "Использован существующий счётчик, residue нет."
+    }
+  },
+  {
+    "step": "SUMMARY",
+    "status": "ok",
+    "failed_steps": [],
+    "total_steps": 8,
+    "total_elapsed_s": 0.9
+  }
+]

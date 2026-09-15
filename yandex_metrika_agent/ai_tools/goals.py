@@ -16,6 +16,7 @@ from yandex_metrika_agent.ai_tools.base import (
     Tool,
     ToolContext,
     ToolResult,
+    ToolSafety,
     strict_object,
 )
 from yandex_metrika_agent.errors import ValidationError
@@ -168,6 +169,10 @@ async def _update_goal(context: ToolContext, arguments: dict[str, Any]) -> Any:
 
 
 async def _delete_goal(context: ToolContext, arguments: dict[str, Any]) -> Any:
+    # ВНИМАНИЕ: сюда попадаем ТОЛЬКО когда ToolRegistry уже проверил валидное
+    # одноразовое подтверждение (safety=DESTRUCTIVE закрыт guard'ом в реестре,
+    # ниже уровня handler'а). Сам handler подтверждения не проверяет и не может
+    # быть вызван в обход guard'а через публичный call().
     resolved = await context.resolve_counter(arguments["counter"])
     if isinstance(resolved, ToolResult):
         return resolved
@@ -182,12 +187,14 @@ TOOLS: list[Tool] = [
         description="Список целей счётчика.",
         input_schema=_LIST_SCHEMA,
         handler=_list_goals,
+        safety=ToolSafety.READ_ONLY,
     ),
     Tool(
         name="metrika_get_goal",
         description="Одна цель по идентификатору (официальный endpoint goal/{goalId}).",
         input_schema=_GET_SCHEMA,
         handler=_get_goal,
+        safety=ToolSafety.READ_ONLY,
     ),
     Tool(
         name="metrika_create_goal",
@@ -198,18 +205,25 @@ TOOLS: list[Tool] = [
         ),
         input_schema=_CREATE_SCHEMA,
         handler=_create_goal,
+        safety=ToolSafety.MUTATING,
     ),
     Tool(
         name="metrika_update_goal",
         description="Изменить цель (название, цена).",
         input_schema=_UPDATE_SCHEMA,
         handler=_update_goal,
+        safety=ToolSafety.MUTATING,
     ),
     Tool(
         name="metrika_delete_goal",
-        description="Удалить цель по идентификатору.",
+        description=(
+            "Удалить цель по идентификатору. Необратимая операция: требует "
+            "явного подтверждения. Без валидного подтверждения вернёт "
+            "confirmation_required и НЕ выполнит удаление."
+        ),
         input_schema=_DELETE_SCHEMA,
         handler=_delete_goal,
+        safety=ToolSafety.DESTRUCTIVE,
     ),
 ]
 

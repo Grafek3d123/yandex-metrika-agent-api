@@ -138,6 +138,9 @@ acceptance      read-only live-check: ok; полный lifecycle 16/16 (Task03)
   явного подтверждения. Нужен confirmation guard (обязательный параметр
   подтверждения / двухшаговый протокол / `dry_run`) и regression-тесты.
   Из-за этого итоговый статус — NOT READY.
+  → **Закрыто в Task05** (confirmation guard ниже уровня handler'а,
+  одноразовый HMAC-токен, привязка к connection/counter/goal, TTL). Детали —
+  `Tasks/Task05_REPORT.md`.
 
 ### 6.3 Известные ограничения (не дефекты)
 

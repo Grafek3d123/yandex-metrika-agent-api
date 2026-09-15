@@ -15,6 +15,7 @@ from yandex_metrika_agent.ai_tools.base import (
     Tool,
     ToolContext,
     ToolResult,
+    ToolSafety,
     strict_object,
 )
 from yandex_metrika_agent.filters import Operator
@@ -237,42 +238,49 @@ TOOLS: list[Tool] = [
         ),
         input_schema=_GET_REPORT_SCHEMA,
         handler=_get_report,
+        safety=ToolSafety.READ_ONLY,
     ),
     Tool(
         name="metrika_get_traffic",
         description="Сводка посещаемости: визиты, посетители, просмотры, отказы, время.",
         input_schema=_COUNTER_DATES_SCHEMA,
         handler=_get_traffic,
+        safety=ToolSafety.READ_ONLY,
     ),
     Tool(
         name="metrika_get_traffic_by_day",
         description="Динамика посещаемости по дням.",
         input_schema=_COUNTER_DATES_SCHEMA,
         handler=_get_traffic_by_day,
+        safety=ToolSafety.READ_ONLY,
     ),
     Tool(
         name="metrika_get_sources",
         description="Источники трафика по посещаемости (убывание).",
         input_schema=_TOP_SCHEMA,
         handler=_get_sources,
+        safety=ToolSafety.READ_ONLY,
     ),
     Tool(
         name="metrika_get_top_pages",
         description="Популярные страницы по просмотрам.",
         input_schema=_TOP_SCHEMA,
         handler=_get_top_pages,
+        safety=ToolSafety.READ_ONLY,
     ),
     Tool(
         name="metrika_get_goal_stats",
         description="Достижения и конверсия цели (сводно или по источникам).",
         input_schema=_GOAL_STATS_SCHEMA,
         handler=_get_goal_stats,
+        safety=ToolSafety.READ_ONLY,
     ),
     Tool(
         name="metrika_compare_periods",
         description="Сравнение метрик за два периода (delta, delta_percent).",
         input_schema=_COMPARE_SCHEMA,
         handler=_compare_periods,
+        safety=ToolSafety.READ_ONLY,
     ),
 ]
 

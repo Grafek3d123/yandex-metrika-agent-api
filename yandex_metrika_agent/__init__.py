@@ -16,7 +16,7 @@ JSON-схемами.
     )
 """
 
-from yandex_metrika_agent.ai_tools import MetrikaTools
+from yandex_metrika_agent.ai_tools import ConfirmationPolicy, MetrikaTools, ToolSafety
 from yandex_metrika_agent.client import MetrikaClient
 from yandex_metrika_agent.counters import CounterService
 from yandex_metrika_agent.errors import (
@@ -45,6 +45,7 @@ __all__ = [
     "ApiError",
     "AuthError",
     "ConfigError",
+    "ConfirmationPolicy",
     "CounterService",
     "Goal",
     "GoalCondition",
@@ -61,6 +62,7 @@ __all__ = [
     "ScopeError",
     "TokenRecord",
     "TokenStorageError",
+    "ToolSafety",
     "TransportError",
     "ValidationError",
     "__version__",

@@ -25,11 +25,15 @@ CLI и план развития.
   недостающих данных;
 - сервис **отчётов**: универсальный `get_report` + AI-friendly методы;
 - **AI Tool Layer**: 14 инструментов со строгими JSON-схемами и конвертом
-  `ok` / `needs_input` / `error` (фасад `MetrikaTools`);
+  `ok` / `needs_input` / `error` / `confirmation_required` (фасад `MetrikaTools`);
+- **destructive safety**: guard подтверждения ниже уровня handler'а — разрушающий
+  инструмент (`metrika_delete_goal`) не выполняет DELETE без одноразового
+  токена, привязанного к `connection_id`/`counter_id`/`goal_id` и ограниченного
+  по времени;
 - словарь человеческих имён метрик/измерений;
 - безопасный **DSL фильтров**;
 - нормализованные типизированные ошибки;
-- **тесты**: 150+ unit-тестов (pytest + respx);
+- **тесты**: 170+ unit-тестов (pytest + respx);
 - CLI `python -m yandex_metrika_agent` (планирование цели из фразы).
 
 Идентификаторы метрик/измерений/фильтров и эндпоинты взяты **только** из
@@ -139,7 +143,7 @@ OAuth-клиента в конфигурации Яндекса. Если пол
 | `counters.py` | `CounterService`: список/чтение/выбор счётчика по сайту, `MetrikaCounter`. |
 | `reports.py` | `ReportService`: `get_report` + AI-friendly методы, разбор ответа. |
 | `planner.py` | `GoalPlanner`: описание цели → `GoalPlan` (ready/needs_input) → `Goal`. |
-| `ai_tools/` | **AI Tool Layer**: `base.py` (Tool/ToolRegistry/ToolResult), `counters.py`, `goals.py`, `analytics.py` — 14 инструментов со строгими схемами. |
+| `ai_tools/` | **AI Tool Layer**: `base.py` (`Tool`/`ToolRegistry`/`ToolResult`/`ToolSafety`/`ConfirmationPolicy` + confirmation guard), `counters.py`, `goals.py`, `analytics.py` — 14 инструментов со строгими схемами. |
 | `__init__.py` | Публичный API пакета (ошибки, модели, сервисы, `MetrikaTools`). |
 | `__main__.py` | CLI `python -m yandex_metrika_agent` / `ymetrika`. |
 
@@ -370,7 +374,7 @@ python -m yandex_metrika_agent plan "цель на отправку формы" 
 
 Стек: `pytest` + `pytest-asyncio` + `respx` (мок HTTP, без реальных credentials).
 
-**Реализовано:** `tests/` содержит 10 модулей и покрывает:
+**Реализовано:** `tests/` содержит 11 модулей и покрывает:
 
 | Модуль | Что проверяется |
 | --- | --- |
@@ -386,6 +390,7 @@ python -m yandex_metrika_agent plan "цель на отправку формы" 
 | `test_filters.py` | все операторы DSL, NOT/скобки, экранирование кавычек, лимиты 20 условий |
 | `test_planner.py` | ready/needs_input/unknown, извлечение URL/телефона/минут, chat/payment_system, запрет угадывания |
 | `test_ai_tools.py` | 14 инструментов, строгие схемы (`additionalProperties: false`), конверты ok/needs_input/error |
+| `test_destructive_safety.py` | confirmation guard: delete без токена не удаляет; привязка токена к connection/counter/goal; TTL; одноразовость; `confirmed=true` не обходит guard; read-only/mutating не гейтятся; реестр не собирает DESTRUCTIVE без policy |
 
 Запуск: `pytest` (конфигурация в `pyproject.toml`).
 
@@ -408,8 +413,12 @@ python -m yandex_metrika_agent plan "цель на отправку формы" 
 - словарь метрик (static aliases; live-каталог — через внешний `MetricGroupPage`);
 - DSL фильтров (официальные операторы, NOT, скобки, экранирование);
 - **AI Tool Layer** (`yandex_metrika_agent.ai_tools`): 14 инструментов со строгими
-  JSON-схемами и единым конвертом `ok` / `needs_input` / `error`; фасад `MetrikaTools`;
-- тесты: 150+ unit-тестов на respx (см. §17).
+  JSON-схемами и единым конвертом `ok` / `needs_input` / `error` /
+  `confirmation_required`; фасад `MetrikaTools`;
+- **destructive safety**: обязательная классификация `ToolSafety`
+  (`READ_ONLY`/`MUTATING`/`DESTRUCTIVE`) и confirmation guard в `ToolRegistry`
+  ниже уровня handler'а (см. §18.1);
+- тесты: 170+ unit-тестов на respx (см. §17).
 
 **В планах (не реализовано):**
 
@@ -419,8 +428,65 @@ python -m yandex_metrika_agent plan "цель на отправку формы" 
 - расширения: Logs API, Segments, Imports, offline conversions.
 
 Ядро намеренно **независимо от MCP**: `MetrikaTools` — обычный реестр
-`Tool(name, description, inputSchema, handler)`; MCP-сервер может слушать тот же
-реестр через `specs()`/`call()` без переделки логики.
+`Tool(name, description, inputSchema, handler, safety)`; MCP-сервер может слушать
+тот же реестр через `specs()`/`call()` без переделки логики.
+
+---
+
+## 18.1. Подтверждение разрушающих операций (destructive safety)
+
+**Модель.** AI-агент умеет только вызывать инструменты через `call(name, args)`
+с JSON-аргументами. Разрушающая операция (`metrika_delete_goal`) не может быть
+выполнена без валидного подтверждения, которое агент не в состоянии подделать.
+
+**Классификация.** У каждого `Tool` обязательно поле `safety: ToolSafety`:
+
+| Уровень | Смысл | Инструменты |
+| --- | --- | --- |
+| `READ_ONLY` | только чтение | 11 инструментов счётчиков/аналитики/чтения |
+| `MUTATING` | обратимая запись | `metrika_create_goal`, `metrika_update_goal` |
+| `DESTRUCTIVE` | необратимо | `metrika_delete_goal` |
+
+Поле не имеет значения по умолчанию — собрать `Tool` без классификации нельзя.
+`ToolRegistry` отказывается регистрировать `DESTRUCTIVE`-инструмент без
+настроенного `ConfirmationPolicy`. Это делает невозможным случайный выпуск
+нового разрушающего инструмента без guard'а.
+
+**Где guard.** Проверка живёт в `ToolRegistry.call` ДО вызова `handler`, а не
+внутри него. Поэтому даже корректно написанный handler `metrika_delete_goal`
+не может выполниться в обход guard'а через публичный `call()`.
+
+**Протокол.**
+
+1. Вызов `metrika_delete_goal` без токена → `status="confirmation_required"` +
+   `confirmation_id` + сводка (`action`, `counter_id`, `goal_id`, `expires_in_seconds`,
+   `reversible:false`). DELETE/API-запрос НЕ отправляется.
+2. Доверенный хост после явного согласия пользователя получает одноразовый
+   токен: `MetrikaTools.approve_confirmation(confirmation_id, approved_by=...)`.
+   Метод **не является инструментом**: его нет в `specs()`, он недостижим из
+   AI Tool Layer.
+3. Повторный вызов с `confirmation_token` (при совпадении всех параметров)
+   выполняет ровно один DELETE и гасит подтверждение.
+
+**Токен** — HMAC-SHA256 от отпечатка операции под секретом процесса
+(`secrets.token_bytes(32)`), поэтому агент не может ни вычислить его, ни
+подставить `confirmed=true` (неизвестный аргумент лишь меняет отпечаток, но
+токена не создаёт). Отпечаток привязывает токен к `connection_id`,
+разрешённому `counter_id`, `goal_id` и набору аргументов. Токен ограничен по
+времени (`ttl_seconds`, по умолчанию 300 с) и одноразовый.
+
+**Отказы (DELETE не выполняется):**
+
+| Ситуация | Статус | `reason` |
+| --- | --- | --- |
+| токена нет (первый вызов) | `confirmation_required` | — |
+| истёк TTL | `confirmation_required` | `expired` |
+| токен от другой операции (иной connection/counter/goal/аргументы) | `confirmation_required` | `mismatch` |
+| токен уже использован | `error` | `reused` |
+| токен подделан / неизвестен / неверный формат | `error` | `tampered`/`unknown`/`malformed` |
+
+`ConfirmationPolicy` инъектируется в `MetrikaTools` (`confirmations=...`), часы
+(`clock`) — параметризуемы для детерминированных тестов TTL.
 
 ---
 
