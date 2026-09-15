@@ -63,7 +63,7 @@ counters = CounterService(client)
 counter = await counters.resolve_one("example.com")   # один счётчик по сайту
 
 goals = GoalService(client)
-result = await goals.ensure_goal(counter.id, url_goal(name="Спасибо", url="/thank-you"))
+result = await goals.create_url_goal(counter.id, name="Спасибо", url="/thank-you")
 # result.created — создана или уже существовала (идемпотентно)
 
 reports = ReportService(client)
@@ -88,7 +88,7 @@ python -m yandex_metrika_agent plan "цель на отправку формы" 
 | `metrika_list_goals` | цели счётчика |
 | `metrika_get_goal` | цель по id |
 | `metrika_create_goal` | создание цели из описания или явного типа (идемпотентно) |
-| `metrika_update_goal` | изменение цели (название, цена, избранное) |
+| `metrika_update_goal` | изменение цели (название, цена) |
 | `metrika_delete_goal` | удаление цели |
 | `metrika_get_report` | произвольный отчёт (человеческие имена метрик/измерений) |
 | `metrika_get_traffic` | сводка посещаемости |

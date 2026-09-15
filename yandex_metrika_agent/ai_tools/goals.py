@@ -60,13 +60,16 @@ _CREATE_SCHEMA: dict[str, Any] = strict_object(
     required=["counter"],
 )
 
+# is_favorite в схему не включаем: фактический API отвергает это поле в PUT
+# (invalid_json, path: goal.is_favorite), а Goal.to_request его вырезает.
+# Принимать параметр, который невозможно применить, — значит возвращать ложный
+# status="ok"; поэтому он здесь просто отсутствует.
 _UPDATE_SCHEMA: dict[str, Any] = strict_object(
     {
         "counter": COUNTER_PARAM,
         "goal_id": {"type": "integer", "minimum": 1},
         "name": {"type": "string", "minLength": 1},
         "price": {"type": "number", "minimum": 0},
-        "is_favorite": {"type": "boolean"},
     },
     required=["counter", "goal_id"],
 )
@@ -154,11 +157,9 @@ async def _update_goal(context: ToolContext, arguments: dict[str, Any]) -> Any:
         updates["name"] = str(arguments["name"])
     if "price" in arguments:
         updates["default_price"] = float(arguments["price"])
-    if "is_favorite" in arguments:
-        updates["is_favorite"] = bool(arguments["is_favorite"])
     if not updates:
         raise ValidationError(
-            "Не указано ни одного поля для изменения (name, price, is_favorite).",
+            "Не указано ни одного поля для изменения (name, price).",
         )
     updated = await context.goals.update(resolved.id, goal.model_copy(update=updates))
     return ToolResult.ok(
@@ -200,7 +201,7 @@ TOOLS: list[Tool] = [
     ),
     Tool(
         name="metrika_update_goal",
-        description="Изменить цель (название, цена, избранное).",
+        description="Изменить цель (название, цена).",
         input_schema=_UPDATE_SCHEMA,
         handler=_update_goal,
     ),

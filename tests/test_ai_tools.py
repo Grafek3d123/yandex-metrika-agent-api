@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 import respx
@@ -12,6 +14,7 @@ from yandex_metrika_agent.errors import ValidationError
 
 COUNTERS_URL = "https://api-metrika.yandex.net/management/v1/counters"
 DATA_URL = "https://api-metrika.yandex.net/stat/v1/data"
+GOAL77_URL = "https://api-metrika.yandex.net/management/v1/counter/44147844/goal/77"
 
 RAW_COUNTER = {
     "id": 44147844,
@@ -251,5 +254,99 @@ async def test_get_report_tool_invalid_metric_is_error() -> None:
         )
         assert answer["status"] == "error"
         assert answer["error"]["error"] == "ValidationError"
+    finally:
+        await tools.aclose()
+
+
+# --- Regression: is_favorite в metrika_update_goal ----------------------------
+#
+# Фактический API отвергает read-only поле is_favorite в PUT (invalid_json,
+# path: goal.is_favorite), Goal.to_request его вырезает. Инструмент update не
+# должен принимать is_favorite вообще: иначе он вернул бы ложный status="ok",
+# ничего не изменив.
+
+
+def _goal77_response() -> dict[str, object]:
+    """Ответ GET цели: API возвращает read-only is_favorite в ответе чтения."""
+
+    return {
+        "goal": {
+            "id": 77,
+            "name": "Старое имя",
+            "type": "url",
+            "conditions": [{"type": "contain", "url": "/thank-you"}],
+            "is_favorite": True,
+            "status": "active",
+        }
+    }
+
+
+def test_update_goal_schema_has_no_is_favorite() -> None:
+    tools = _tools()
+    schema = tools.registry.get("metrika_update_goal").input_schema
+    assert "is_favorite" not in schema["properties"]
+
+
+@pytest.mark.asyncio()
+@respx.mock
+async def test_update_goal_is_favorite_only_is_error_no_put() -> None:
+    """Одиночный is_favorite игнорируется: PUT не отправляется, ответ error."""
+
+    respx.get(COUNTERS_URL).mock(
+        return_value=httpx.Response(200, json={"rows": 1, "counters": [RAW_COUNTER]})
+    )
+    respx.get(GOAL77_URL).mock(return_value=httpx.Response(200, json=_goal77_response()))
+    put_route = respx.put(GOAL77_URL).mock(
+        return_value=httpx.Response(200, json=_goal77_response())
+    )
+    tools = _tools()
+    try:
+        answer = await tools.call(
+            "metrika_update_goal",
+            {"counter": "example.com", "goal_id": 77, "is_favorite": True},
+        )
+        assert answer["status"] == "error"
+        assert answer["error"]["error"] == "ValidationError"
+        assert put_route.call_count == 0
+    finally:
+        await tools.aclose()
+
+
+@pytest.mark.asyncio()
+@respx.mock
+async def test_update_goal_name_price_works_without_is_favorite() -> None:
+    """name/price применяются; тело PUT не содержит is_favorite даже из GET."""
+
+    respx.get(COUNTERS_URL).mock(
+        return_value=httpx.Response(200, json={"rows": 1, "counters": [RAW_COUNTER]})
+    )
+    respx.get(GOAL77_URL).mock(return_value=httpx.Response(200, json=_goal77_response()))
+    put_route = respx.put(GOAL77_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "goal": {
+                    "id": 77,
+                    "name": "Новое имя",
+                    "type": "url",
+                    "conditions": [{"type": "contain", "url": "/thank-you"}],
+                    "default_price": 100,
+                }
+            },
+        )
+    )
+    tools = _tools()
+    try:
+        answer = await tools.call(
+            "metrika_update_goal",
+            {"counter": "example.com", "goal_id": 77, "name": "Новое имя", "price": 100},
+        )
+        assert answer["status"] == "ok"
+        assert put_route.call_count == 1
+        sent = json.loads(put_route.calls.last.request.content.decode("utf-8"))
+        goal_payload = sent["goal"]
+        assert "is_favorite" not in goal_payload
+        assert goal_payload["name"] == "Новое имя"
+        assert goal_payload["default_price"] == 100
     finally:
         await tools.aclose()
