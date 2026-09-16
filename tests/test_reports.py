@@ -185,3 +185,69 @@ async def test_unknown_metric_rejected(client: object) -> None:
     service = ReportService(client)  # type: ignore[arg-type]
     with pytest.raises(ValidationError):
         await service.get_report({"counter_id": 441, "metrics": ["not_a_metric"]})
+
+
+# --- B1 (Task06): сортировка по измерению ------------------------------------
+
+
+@pytest.mark.asyncio()
+@respx.mock
+async def test_get_traffic_by_day_sorts_by_date_dimension(client: object) -> None:
+    """B1: динамика по дням формирует сортировку по измерению ``date``."""
+    route = respx.get(DATA_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json=_report_payload(
+                data=[{"dimensions": [{"name": "2026-09-01"}], "metrics": [100, 80]}],
+                dimension_names=["ym:s:date"],
+                metric_names=["ym:s:visits", "ym:s:users"],
+                totals=[100, 80],
+            ),
+        )
+    )
+    service = ReportService(client)  # type: ignore[arg-type]
+    rows = await service.get_traffic_by_day(441, date_from="2026-09-01", date_to="2026-09-07")
+    params = route.calls[0].request.url.params
+    assert params["sort"] == "ym:s:date"
+    assert params["dimensions"] == "ym:s:date"
+    assert rows == [{"date": "2026-09-01", "visits": 100, "users": 80}]
+
+
+@pytest.mark.asyncio()
+@respx.mock
+async def test_get_report_sorts_by_dimension(client: object) -> None:
+    """B1: ``get_report`` с dimensions=["date"] и sort=["date"] проходит валидацию."""
+    route = respx.get(DATA_URL).mock(
+        return_value=httpx.Response(200, json=_report_payload(dimension_names=["ym:s:date"]))
+    )
+    service = ReportService(client)  # type: ignore[arg-type]
+    await service.get_report(
+        {"counter_id": 441, "metrics": ["visits"], "dimensions": ["date"], "sort_by": ["date"]}
+    )
+    assert route.calls[0].request.url.params["sort"] == "ym:s:date"
+
+
+@pytest.mark.asyncio()
+@respx.mock
+async def test_sort_by_metric_still_works(client: object) -> None:
+    """Регресс: сортировка по метрике (со знаком) сохранена."""
+    route = respx.get(DATA_URL).mock(
+        return_value=httpx.Response(200, json=_report_payload())
+    )
+    service = ReportService(client)  # type: ignore[arg-type]
+    await service.get_report(
+        {"counter_id": 441, "metrics": ["visits"], "sort_by": ["-visits"]}
+    )
+    assert route.calls[0].request.url.params["sort"] == "-ym:s:visits"
+
+
+@pytest.mark.asyncio()
+@respx.mock
+async def test_unknown_sort_token_rejected(client: object) -> None:
+    """Неизвестный токен сортировки (ни метрика, ни измерение) → ValidationError."""
+    service = ReportService(client)  # type: ignore[arg-type]
+    with pytest.raises(ValidationError):
+        await service.get_report(
+            {"counter_id": 441, "metrics": ["visits"], "sort_by": ["not_a_sort"]}
+        )
+

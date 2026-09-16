@@ -404,13 +404,24 @@ class ReportService:
         return [self.directory.dimension(name, allow_unknown=True) for name in names]
 
     def _sort_token(self, token: str, *, validate: bool) -> str:
-        """Перевести токен сортировки (``-visits`` -> ``-ym:s:visits``)."""
+        """Перевести токен сортировки (``-visits`` -> ``-ym:s:visits``).
+
+        Сортировка разрешена и по метрике, и по измерению: ``date`` и прочие
+        измерения валидны как токены сортировки. Токен сначала пробуют как
+        метрику, затем как измерение; неизвестное имя (ни то, ни другое) в
+        строгом режиме по-прежнему вызывает :class:`ValidationError`.
+        """
 
         sign = ""
         name = token.strip()
         if name[:1] in {"-", "+"}:
             sign, name = name[0], name[1:]
-        resolved = self.directory.metric(name, allow_unknown=not validate)
+        try:
+            resolved = self.directory.metric(name, allow_unknown=not validate)
+        except ValidationError:
+            # Метрики нет — пробуем измерение (``date`` и т. п.). При неизвестном
+            # имени dimension тоже бросит ValidationError: валидация не слабеет.
+            resolved = self.directory.dimension(name, allow_unknown=not validate)
         return f"{sign}{resolved}"
 
     def _validate(
