@@ -30,3 +30,12 @@ data/tokens/
 # Acceptance run artifacts (contain live counter/goal ids; no secrets)
 scripts/task03_results.json
 scripts/task03_run.log
+
+# Клиентские данные Метрики (конфиденциально — НЕ коммитить)
+# Реальные счётчики, цели, трафик конкретных сайтов-клиентов.
+reports/
+Tasks/*_REPORT.md
+Tasks/Task07.md
+
+# Одноразовые инспекторы/пробы сессии (временные, не часть инструментов)
+scripts/_*.py

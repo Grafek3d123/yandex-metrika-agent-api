@@ -202,14 +202,12 @@ class GoalCondition(_Model):
     @field_validator("type")
     @classmethod
     def _known_type(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        lowered = value.strip().lower()
-        if lowered not in CONDITION_TYPES:
-            raise ValueError(
-                f"Неизвестный тип условия {value!r}. Допустимо: {', '.join(CONDITION_TYPES)}.",
-            )
-        return lowered
+        # Чтение устойчиво: Метрика создаёт автоцели с типами условий вне нашего
+        # перечисления (например, ``all_social`` у автоцели «соцсети»). Неизвестный
+        # тип условия сохраняем как есть, иначе разбор ответа API падает и список
+        # целей реального счётчика не читается. Строгая проверка типа условия
+        # выполняется при СОЗДАНИИ цели в :meth:`Goal.validate_for_write`.
+        return value.strip().lower() if value is not None else None
 
     @model_validator(mode="after")
     def _has_value(self) -> GoalCondition:
@@ -288,12 +286,13 @@ class Goal(_Model):
     @field_validator("type")
     @classmethod
     def _known_type(cls, value: str) -> str:
-        lowered = value.strip().lower()
-        if lowered not in GOAL_TYPES:
-            raise ValueError(
-                f"Неизвестный тип цели {value!r}. Допустимо: {', '.join(GOAL_TYPES)}.",
-            )
-        return lowered
+        # Чтение устойчиво: Метрика создаёт автоцели с типами вне нашего
+        # перечисления (``contact_data``, ``contact_data_sent``, ``cdp_order_paid``
+        # и т. п. — ``goal_source: "auto"``). Неизвестный тип сохраняем как есть,
+        # иначе разбор ответа API падает и агент не может прочитать статистику
+        # реального счётчика. Строгая проверка типа выполняется при СОЗДАНИИ цели
+        # в :meth:`GoalService.create` — там, где нельзя допустить выдуманного типа.
+        return value.strip().lower()
 
     @field_validator("name")
     @classmethod
@@ -306,15 +305,37 @@ class Goal(_Model):
             )
         return value
 
-    @model_validator(mode="after")
-    def _check_payload(self) -> Goal:
-        """Проверить, что у типа есть обязательные данные."""
+    def _all_write_conditions(self) -> list[GoalCondition]:
+        """Все условия цели и её шагов — для строгой проверки при создании."""
+
+        conditions: list[GoalCondition] = list(self.conditions or ())
+        for step in self.steps or ():
+            conditions.extend(step.conditions or ())
+        return conditions
+
+    def validate_for_write(self) -> None:
+        """Проверить обязательные данные типа перед СОЗДАНИЕМ цели.
+
+        Инварианты относятся к записи, а не к чтению: список целей
+        ``GET /counter/{id}/goals`` возвращает сокращённые объекты (например,
+        ``phone``-цель без ``conditions``), и жёсткая проверка прямо в модели
+        ломала бы разбор реальных ответов. Вызывается из
+        :meth:`GoalService.create`. Бросает :class:`ValueError` при нарушении.
+        """
 
         if self.type in GOAL_TYPES_REQUIRING_CONDITIONS and not self.conditions:
             raise ValueError(
                 f"Цели типа {self.type!r} нужны условия conditions: "
                 f"{GOAL_TYPE_TITLES.get(self.type, self.type)}.",
             )
+        # Типы условий при создании должны быть известными (защита от выдуманного
+        # типа на записи; чтение устойчиво к неизвестным типам автоцелей).
+        for condition in self._all_write_conditions():
+            if condition.type is not None and condition.type not in CONDITION_TYPES:
+                raise ValueError(
+                    f"Неизвестный тип условия {condition.type!r}. "
+                    f"Допустимо: {', '.join(CONDITION_TYPES)}.",
+                )
         if self.type == "number" and self.depth is None:
             raise ValueError("Цели типа 'number' нужно значение depth — количество просмотров.")
         if self.type == "visit_duration" and self.duration is None:
@@ -325,7 +346,6 @@ class Goal(_Model):
             raise ValueError("depth должен быть не меньше 2 просмотров.")
         if self.duration is not None and self.duration < 1:
             raise ValueError("duration должен быть не меньше 1 секунды.")
-        return self
 
     @property
     def title(self) -> str:

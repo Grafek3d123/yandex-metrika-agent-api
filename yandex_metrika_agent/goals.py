@@ -28,7 +28,7 @@ from typing import Any
 from yandex_metrika_agent.client import MetrikaClient
 from yandex_metrika_agent.errors import NotFoundError, ValidationError
 from yandex_metrika_agent.log import get_logger
-from yandex_metrika_agent.models import Goal, GoalCondition
+from yandex_metrika_agent.models import GOAL_TYPES, Goal, GoalCondition
 
 _LOGGER = get_logger("goals")
 
@@ -138,8 +138,24 @@ class GoalService:
     # --- Запись --------------------------------------------------------------
 
     async def create(self, counter_id: int, goal: Goal) -> Goal:
-        """Создать цель и вернуть её же с присвоенным ``id``."""
+        """Создать цель и вернуть её же с присвоенным ``id``.
 
+        Тип создаваемой цели проверяется строго: допустимы только известные
+        создаваемые типы (:data:`GOAL_TYPES`). Автоцели Метрики (``contact_data``,
+        ``cdp_order_*``) модель читает, но создать их через этот метод нельзя —
+        так сохраняется защита от выдуманного типа на записи.
+        """
+
+        if goal.type not in GOAL_TYPES:
+            raise ValidationError(
+                f"Нельзя создать цель неизвестного типа {goal.type!r}. "
+                f"Допустимо: {', '.join(GOAL_TYPES)}.",
+                details={"type": goal.type, "allowed": list(GOAL_TYPES)},
+            )
+        try:
+            goal.validate_for_write()
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
         payload = await self.client.post_json(
             _counter_path(counter_id),
             {"goal": goal.to_request()},

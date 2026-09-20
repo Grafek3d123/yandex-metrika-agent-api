@@ -139,3 +139,114 @@ def test_signature_distinguishes_conditions() -> None:
     c = action_goal(name="A", event="other")
     assert a.signature() == b.signature()
     assert a.signature() != c.signature()
+
+
+# --- Устойчивое чтение автоцелей Метрики (реальный аккаунт вскрыл баг) --------
+
+# Типы автоцелей, которые Метрика создаёт сама (goal_source="auto") и которых
+# нет в нашем перечислении создаваемых типов. Встречены в реальном аккаунте.
+AUTO_GOAL_JSON = {
+    "id": 545418480,
+    "name": "Автоцель: заполнил контактные данные",
+    "type": "contact_data",
+    "default_price": 0.0,
+    "goal_source": "auto",
+    "status": "Active",
+}
+
+
+def test_goal_model_reads_unknown_type() -> None:
+    """Модель читает цель неизвестного типа, не падая (read-tolerant)."""
+
+    goal = Goal.model_validate(AUTO_GOAL_JSON)
+    assert goal.type == "contact_data"
+    assert goal.id == 545418480
+    # describe/title не падают на неизвестном типе.
+    assert "contact_data" in goal.describe()
+
+
+@pytest.mark.asyncio()
+@respx.mock
+async def test_list_goals_tolerates_auto_types(client: object) -> None:
+    """Список целей с автоцелью неизвестного типа читается целиком."""
+
+    _mock_goals({"goals": [GOAL_JSON, AUTO_GOAL_JSON]})
+    goals = await GoalService(client).list(441)  # type: ignore[arg-type]
+    assert len(goals) == 2
+    assert {g.type for g in goals} == {"action", "contact_data"}
+
+
+@pytest.mark.asyncio()
+@respx.mock
+async def test_create_rejects_unknown_type(client: object) -> None:
+    """Создать цель неизвестного типа нельзя (защита от выдуманного типа)."""
+
+    goal = Goal.model_validate({"name": "Странная", "type": "contact_data"})
+    with pytest.raises(ValidationError):
+        await GoalService(client).create(441, goal)  # type: ignore[arg-type]
+
+
+# Телефонная цель в списке API приходит без conditions (сокращённый объект).
+PHONE_GOAL_LIST_JSON = {
+    "id": 585281057,
+    "name": "Клик по телефону",
+    "type": "phone",
+    "hide_phone_number": False,
+    "status": "Active",
+}
+
+
+def test_goal_model_reads_phone_without_conditions() -> None:
+    """Список целей отдаёт phone-цель без conditions — модель читает её."""
+
+    goal = Goal.model_validate(PHONE_GOAL_LIST_JSON)
+    assert goal.type == "phone"
+    assert goal.conditions is None
+
+
+@pytest.mark.asyncio()
+@respx.mock
+async def test_create_phone_without_conditions_rejected(client: object) -> None:
+    """При создании phone-цель без conditions отклоняется (инвариант записи)."""
+
+    goal = Goal.model_validate(PHONE_GOAL_LIST_JSON)  # id не помешает, create его игнорирует
+    with pytest.raises(ValidationError):
+        await GoalService(client).create(441, goal)  # type: ignore[arg-type]
+
+
+# Условие автоцели соцсети: тип all_social отсутствует в CONDITION_TYPES.
+SOCIAL_AUTO_GOAL_JSON = {
+    "id": 600000001,
+    "name": "Автоцель: переход в соцсеть",
+    "type": "social",
+    "conditions": [{"type": "all_social"}],
+    "status": "Active",
+}
+
+
+def test_goal_condition_reads_unknown_type() -> None:
+    """Модель читает условие неизвестного типа (all_social), не падая."""
+
+    goal = Goal.model_validate(SOCIAL_AUTO_GOAL_JSON)
+    assert goal.conditions is not None
+    assert goal.conditions[0].type == "all_social"
+
+
+@pytest.mark.asyncio()
+@respx.mock
+async def test_list_goals_tolerates_social_auto_goal(client: object) -> None:
+    """Список целей с автоцелью all_social читается целиком."""
+
+    _mock_goals({"goals": [GOAL_JSON, SOCIAL_AUTO_GOAL_JSON]})
+    goals = await GoalService(client).list(441)  # type: ignore[arg-type]
+    assert len(goals) == 2
+
+
+@pytest.mark.asyncio()
+@respx.mock
+async def test_create_rejects_unknown_condition_type(client: object) -> None:
+    """Создать цель с условием неизвестного типа нельзя (защита на записи)."""
+
+    goal = Goal.model_validate({"name": "Соцсеть", "type": "social", "conditions": [{"type": "all_social"}]})
+    with pytest.raises(ValidationError):
+        await GoalService(client).create(441, goal)  # type: ignore[arg-type]
