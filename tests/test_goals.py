@@ -247,6 +247,10 @@ async def test_list_goals_tolerates_social_auto_goal(client: object) -> None:
 async def test_create_rejects_unknown_condition_type(client: object) -> None:
     """Создать цель с условием неизвестного типа нельзя (защита на записи)."""
 
-    goal = Goal.model_validate({"name": "Соцсеть", "type": "social", "conditions": [{"type": "all_social"}]})
+    goal = Goal.model_validate({
+        "name": "Соцсеть",
+        "type": "social",
+        "conditions": [{"type": "all_social"}],
+    })
     with pytest.raises(ValidationError):
         await GoalService(client).create(441, goal)  # type: ignore[arg-type]

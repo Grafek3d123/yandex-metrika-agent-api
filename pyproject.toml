@@ -1,7 +1,7 @@
 [project]
 name = "yandex-metrika-agent-api"
 version = "0.1.0"
-description = "AI-friendly integration layer over the Yandex Metrica API (Management + Reports)"
+description = "Typed Python client / capability for the Yandex Metrika API (Management + Reports)"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
@@ -12,7 +12,6 @@ dependencies = [
 ]
 
 [project.scripts]
-ymetrika = "yandex_metrika_agent.__main__:main"
 
 [dependency-groups]
 dev = [

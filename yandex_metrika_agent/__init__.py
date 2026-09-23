@@ -1,29 +1,28 @@
-"""Yandex Metrika agent.
+"""Typed Python client for the Yandex Metrika API.
 
-Пакет-агент для работы с API Яндекс Метрики: OAuth, зашифрованное хранилище
-токенов, сервисы (счётчики, цели, отчёты), AI Tool Layer со строгими
-JSON-схемами.
+Reusable capability layer: OAuth, encrypted token storage, HTTP transport with
+retry/rate-limit, typed services for counters, goals, and reports.
 
-Публичный вход для интегратора::
+Public entry points::
 
     from yandex_metrika_agent import (
         MetrikaClient,
         CounterService,
         GoalService,
         ReportService,
-        GoalPlanner,
-        MetrikaTools,
     )
+
+Business orchestration and natural-language interaction live outside
+this repository.
 """
 
-from yandex_metrika_agent.ai_tools import ConfirmationPolicy, MetrikaTools, ToolSafety
 from yandex_metrika_agent.client import MetrikaClient
 from yandex_metrika_agent.counters import CounterService
 from yandex_metrika_agent.errors import (
-    AgentError,
     ApiError,
     AuthError,
     ConfigError,
+    MetrikaError,
     NotFoundError,
     RateLimitedError,
     ScopeError,
@@ -32,37 +31,31 @@ from yandex_metrika_agent.errors import (
     ValidationError,
 )
 from yandex_metrika_agent.goals import GoalService
-from yandex_metrika_agent.models import GOAL_TYPES, Goal, GoalCondition, GoalType
-from yandex_metrika_agent.planner import GoalPlan, GoalPlanner, PlanStatus
+from yandex_metrika_agent.models import GOAL_TYPES, Goal, GoalCondition, GoalType, ReportCommand
 from yandex_metrika_agent.reports import ReportService
 from yandex_metrika_agent.tokens import TokenRecord
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 __all__ = [
     "GOAL_TYPES",
-    "AgentError",
     "ApiError",
     "AuthError",
     "ConfigError",
-    "ConfirmationPolicy",
     "CounterService",
     "Goal",
     "GoalCondition",
-    "GoalPlan",
-    "GoalPlanner",
     "GoalService",
     "GoalType",
     "MetrikaClient",
-    "MetrikaTools",
+    "MetrikaError",
     "NotFoundError",
-    "PlanStatus",
     "RateLimitedError",
+    "ReportCommand",
     "ReportService",
     "ScopeError",
     "TokenRecord",
     "TokenStorageError",
-    "ToolSafety",
     "TransportError",
     "ValidationError",
     "__version__",

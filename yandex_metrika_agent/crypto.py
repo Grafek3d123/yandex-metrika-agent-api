@@ -18,7 +18,7 @@ from yandex_metrika_agent.errors import TokenStorageError
 NONCE_SIZE = 12
 KEY_SIZE = 32
 _FORMAT_VERSION = b"\x01"
-_HKDF_INFO = b"metrika-agent/token-store"
+_HKDF_INFO = b"yandex-metrika/token-store"
 
 
 def generate_key() -> str:

@@ -491,7 +491,7 @@ class Transport:
             cacheable: разрешить кэш и дедупликацию (только для GET).
 
         Raises:
-            AgentError: любая ошибка Метрики уже типизирована
+            MetrikaError: любая ошибка Метрики уже типизирована
                 :func:`yandex_metrika_agent.errors.error_from_response`.
         """
 

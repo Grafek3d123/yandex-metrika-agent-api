@@ -118,7 +118,7 @@ def pkce_challenge(verifier: str) -> str:
     return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
 
 
-def new_device_id(prefix: str = "metrika-agent") -> str:
+def new_device_id(prefix: str = "yandex-metrika") -> str:
     """Идентификатор устройства для device-потока (6..50 печатных ASCII)."""
 
     return f"{prefix}-{secrets.token_hex(8)}"[:50]
@@ -301,7 +301,7 @@ class OAuthClient:
         *,
         scopes: Sequence[str] = METRIKA_ALL_SCOPES,
         device_id: str | None = None,
-        device_name: str = "metrika-agent",
+        device_name: str = "yandex-metrika",
     ) -> DeviceCode:
         """Запросить пару кодов device-потока."""
 

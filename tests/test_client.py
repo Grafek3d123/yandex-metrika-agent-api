@@ -72,9 +72,9 @@ async def test_error_response_typed() -> None:
     )
     client = MetrikaClient(token="t")
     try:
-        from yandex_metrika_agent.errors import AgentError
+        from yandex_metrika_agent.errors import MetrikaError
 
-        with pytest.raises(AgentError):
+        with pytest.raises(MetrikaError):
             await client.get_json("/management/v1/counters")
     finally:
         await client.aclose()

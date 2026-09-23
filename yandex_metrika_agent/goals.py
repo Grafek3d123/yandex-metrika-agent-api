@@ -1,22 +1,21 @@
-"""Управление целями счётчика (Management API v1).
+"""Goal management for Yandex Metrika counters (Management API v1).
 
-Методы API (проверено по официальной документации ``management/openapi``):
+API endpoints (per official ``management/openapi`` documentation):
 
-* ``GET    /management/v1/counter/{counterId}/goals`` — список
-  (ответ ``{"goals": [...]}``, старый ``{"items": [...]}`` тоже поддерживается);
-* ``GET    /management/v1/counter/{counterId}/goal/{goalId}`` — одна цель
-  (ответ ``{"goal": {...}}``);
-* ``POST   /management/v1/counter/{counterId}/goals`` — создание (тело ``{"goal": {...}}``);
-* ``PUT    /management/v1/counter/{counterId}/goal/{goalId}`` — изменение;
-* ``DELETE /management/v1/counter/{counterId}/goal/{goalId}`` — удаление
-  (ответ ``{"success": true}``).
+* ``GET    /management/v1/counter/{counterId}/goals`` — list
+  (response ``{"goals": [...]}``, legacy ``{"items": [...]}`` also supported);
+* ``GET    /management/v1/counter/{counterId}/goal/{goalId}`` — single goal
+  (response ``{"goal": {...}}``);
+* ``POST   /management/v1/counter/{counterId}/goals`` — create (body ``{"goal": {...}}``);
+* ``PUT    /management/v1/counter/{counterId}/goal/{goalId}`` — update;
+* ``DELETE /management/v1/counter/{counterId}/goal/{goalId}`` — delete
+  (response ``{"success": true}``).
 
-Агенту важно не создавать повторы: ``ensure_goal`` сначала ищет такую же цель
-по существенным параметрам (тип + условия + шаги + глубина + длительность,
-название не учитывается) и возвращает найденную, помечая ``created=False``.
-Совпадение только по названию дубликатом не считается: такое цель-имя может
-относиться к другому условию — создание выполняется, а в результат попадает
-предупреждение.
+Idempotency: ``ensure_goal`` searches for an existing goal with matching
+essential parameters (type + conditions + steps + depth + duration; name is
+ignored) and returns it with ``created=False``. A name-only match is not
+considered a duplicate — creation proceeds, but a warning is included in
+the result.
 """
 
 from __future__ import annotations
@@ -87,7 +86,7 @@ class GoalResult:
     warnings: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
-        """Словарь для JSON-вывода CLI и ответов агенту."""
+        """Serialize to a plain dictionary for JSON output."""
 
         return {
             "created": self.created,
@@ -187,12 +186,12 @@ class GoalService:
         return payload if isinstance(payload, dict) else {}
 
     async def ensure_goal(self, counter_id: int, goal: Goal) -> GoalResult:
-        """Создать цель, если такой ещё нет (идемпотентность).
+        """Create a goal if an identical one does not already exist (idempotent).
 
-        Возвращает найденную цель с ``created=False``, если она уже есть:
-        агент может безопасно повторять запрос после сбоя. Совпадение только
-        по названию дубликатом не считается — создание выполняется, но в
-        ``GoalResult.warnings`` попадает предупреждение о похожем имени.
+        Returns the existing goal with ``created=False`` if found.  Callers
+        can safely retry after a failure without creating duplicates.  A
+        name-only match is not treated as a duplicate — creation proceeds,
+        but ``GoalResult.warnings`` includes a note about the similar name.
         """
 
         if not self.check_duplicates:

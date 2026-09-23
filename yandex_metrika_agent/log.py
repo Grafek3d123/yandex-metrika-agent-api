@@ -63,7 +63,7 @@ def get_logger(name: str) -> std_logging.Logger:
 
     if not _configured:
         setup_logging()
-    return std_logging.getLogger(f"metrika_agent.{name}")
+    return std_logging.getLogger(f"yandex_metrika.{name}")
 
 
 def is_sensitive_key(key: str) -> bool:

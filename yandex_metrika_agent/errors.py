@@ -1,8 +1,8 @@
-"""Типизированные ошибки агента.
+"""Типизированные ошибки клиента Yandex Metrika.
 
-Все ошибки — подклассы :class:`AgentError`, чтобы вызывающий код мог перехватить их
-одним ``except`` и при этом различать категории. Ошибки несут структурированные
-детали (код статуса, request-id, тело ответа), пригодные для ``--json``.
+Все ошибки — подклассы :class:`MetrikaError`, чтобы вызывающий код мог перехватить
+их одним ``except`` и при этом различать категории. Ошибки несут структурированные
+детали (код статуса, request-id, тело ответа).
 """
 
 from __future__ import annotations
@@ -23,8 +23,8 @@ _REQUEST_ID_HEADERS: tuple[str, ...] = (
 )
 
 
-class AgentError(Exception):
-    """Базовая ошибка агента."""
+class MetrikaError(Exception):
+    """Базовая ошибка клиента Metrika."""
 
     def __init__(self, message: str, *, details: dict[str, Any] | None = None) -> None:
         super().__init__(message)
@@ -44,31 +44,31 @@ class AgentError(Exception):
         return self.message
 
 
-class ConfigError(AgentError):
+class ConfigError(MetrikaError):
     """Отсутствует или некорректна конфигурация (клиент, ключ, URI)."""
 
 
-class ValidationError(AgentError):
+class ValidationError(MetrikaError):
     """Данные не прошли проверку перед отправкой в API."""
 
 
-class AuthError(AgentError):
+class AuthError(MetrikaError):
     """OAuth-ошибка: некорректный код, токена нет/он истёк/отозван, 401/403."""
 
 
-class TokenStorageError(AgentError):
+class TokenStorageError(MetrikaError):
     """Ошибка хранилища токенов: нет ключа шифрования, файл повреждён."""
 
 
-class NotFoundError(AgentError):
+class NotFoundError(MetrikaError):
     """Объект не найден или недоступен текущему пользователю (404)."""
 
 
-class ScopeError(AgentError):
+class ScopeError(MetrikaError):
     """Недостаточно прав/скоупов либо операция недоступна по условиям API."""
 
 
-class TransportError(AgentError):
+class TransportError(MetrikaError):
     """HTTP-ошибка после исчерпания повторов (таймаут, 5xx, соединение)."""
 
     def __init__(
@@ -84,7 +84,7 @@ class TransportError(AgentError):
         self.attempts = attempts
 
 
-class ApiError(AgentError):
+class ApiError(MetrikaError):
     """Metrica вернула ошибку бизнес-логики (4xx с описанием)."""
 
     def __init__(
@@ -223,7 +223,7 @@ def error_from_response(
     payload: Any,
     method: str,
     url: str,
-) -> AgentError:
+) -> MetrikaError:
     """Преобразовать неуспешный ответ Metrica в ошибку нужной категории."""
 
     request_id = extract_request_id(headers)

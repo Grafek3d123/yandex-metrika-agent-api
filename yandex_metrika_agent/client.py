@@ -124,7 +124,7 @@ class MetrikaClient:
     cache_ttl: float = 0.0
     connection_id: str = "default"
     transport: Transport = field(init=False)
-    user_agent: str = "metrika-agent/0.1 (+https://github.com/; AI assistant integration)"
+    user_agent: str = "yandex-metrika-client/0.1"
 
     def __post_init__(self) -> None:
         source: AccessTokenSource
@@ -226,7 +226,7 @@ class MetrikaClient:
             cacheable: можно ли отдать кэшированный/параллельный GET.
 
         Raises:
-            AgentError: любая ошибка (см. :mod:`yandex_metrika_agent.errors`).
+            MetrikaError: любая ошибка (см. :mod:`yandex_metrika_agent.errors`).
         """
 
         headers = {"Authorization": f"OAuth {await self._source.access_token()}"}

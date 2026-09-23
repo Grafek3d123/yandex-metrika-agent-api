@@ -1,4 +1,4 @@
-"""Конфигурация агента.
+"""Конфигурация клиента Yandex Metrika.
 
 Значения берутся из переменных окружения (и .env, если установлен python-dotenv).
 Пути конфигурации — по XDG, а не в домашней директории.
@@ -34,7 +34,7 @@ def config_dir() -> Path:
 
     base = os.environ.get("XDG_CONFIG_HOME")
     root = Path(base) if base else Path.home() / ".config"
-    return root / "metrika-agent"
+    return root / "yandex-metrika"
 
 
 def token_dir() -> Path:
@@ -101,7 +101,7 @@ class Settings:
         if self.token_key is None:
             raise ConfigError(
                 "Не задан METRIKA_TOKEN_KEY. Сгенерируйте ключ: "
-                "python -m yandex_metrika_agent.tools genkey",
+                'python -c "import secrets; print(secrets.token_hex(32))"',
             )
 
 
